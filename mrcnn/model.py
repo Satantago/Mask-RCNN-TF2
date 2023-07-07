@@ -216,12 +216,14 @@ def apply_box_deltas_graph(boxes, deltas):
     deltas: [N, (dy, dx, log(dh), log(dw))] refinements to apply
     """
     # Convert to y, x, h, w
-    height = boxes[:, 2] - boxes[:, 0]
-    width = boxes[:, 3] - boxes[:, 1]
-    center_y = boxes[:, 0] + 0.5 * height
-    center_x = boxes[:, 1] + 0.5 * width
+    height = boxes[:, 2] - boxes[:, 0]  #boxes[y2] - boxes[y1]
+    width = boxes[:, 3] - boxes[:, 1]   #boxes[x2] - boxes[x1]
+    #ADD DEPTH?
+
+    center_y = boxes[:, 0] + 0.5 * height #boxes[y1] + 0.5 * height
+    center_x = boxes[:, 1] + 0.5 * width #boxes[x1] + 0.5 * width
     # Apply deltas
-    center_y += deltas[:, 0] * height
+    center_y += deltas[:, 0] * height 
     center_x += deltas[:, 1] * width
     height *= tf.exp(deltas[:, 2])
     width *= tf.exp(deltas[:, 3])
@@ -242,6 +244,8 @@ def clip_boxes_graph(boxes, window):
     # Split
     wy1, wx1, wy2, wx2 = tf.split(window, 4)
     y1, x1, y2, x2 = tf.split(boxes, 4, axis=1)
+    #do depth too
+    
     # Clip
     y1 = tf.maximum(tf.minimum(y1, wy2), wy1)
     x1 = tf.maximum(tf.minimum(x1, wx2), wx1)
@@ -287,6 +291,7 @@ class ProposalLayer(KE.Layer):
         pre_nms_limit = tf.minimum(self.config.PRE_NMS_LIMIT, tf.shape(anchors)[1])
         ix = tf.nn.top_k(scores, pre_nms_limit, sorted=True,
                          name="top_anchors").indices
+        # gather scores with corresponding ix
         scores = utils.batch_slice([scores, ix], lambda x, y: tf.gather(x, y),
                                    self.config.IMAGES_PER_GPU)
         deltas = utils.batch_slice([deltas, ix], lambda x, y: tf.gather(x, y),
@@ -462,11 +467,11 @@ def overlaps_graph(boxes1, boxes2):
     # every boxes1 against every boxes2 without loops.
     # TF doesn't have an equivalent to np.repeat() so simulate it
     # using tf.tile() and tf.reshape.
-    b1 = tf.reshape(tf.tile(tf.expand_dims(boxes1, 1),
+    b1 = tf.reshape(tf.tile(tf.expand_dims(boxes1, 1),  
                             [1, 1, tf.shape(boxes2)[0]]), [-1, 4])
     b2 = tf.tile(boxes2, [tf.shape(boxes1)[0], 1])
     # 2. Compute intersections
-    b1_y1, b1_x1, b1_y2, b1_x2 = tf.split(b1, 4, axis=1)
+    b1_y1, b1_x1, b1_y2, b1_x2 = tf.split(b1, 4, axis=1)  # NEEDS TO CHANGE?
     b2_y1, b2_x1, b2_y2, b2_x2 = tf.split(b2, 4, axis=1)
     y1 = tf.maximum(b1_y1, b2_y1)
     x1 = tf.maximum(b1_x1, b2_x1)
@@ -505,6 +510,7 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     Note: Returned arrays might be zero padded if not enough target ROIs.
     """
     # Assertions
+    ## assert there is at least one proposal to compute targets
     asserts = [
         tf.Assert(tf.greater(tf.shape(proposals)[0], 0), [proposals],
                   name="roi_assertion"),
@@ -517,7 +523,12 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     gt_boxes, non_zeros = trim_zeros_graph(gt_boxes, name="trim_gt_boxes")
     gt_class_ids = tf.boolean_mask(gt_class_ids, non_zeros,
                                    name="trim_gt_class_ids")
-    gt_masks = tf.gather(gt_masks, tf.where(non_zeros)[:, 0], axis=2,
+    """
+    Assuming your 3D tensor gt_masks has dimensions [depth, height, width, MAX_GT_INSTANCES], 
+    and you want to select the masks along the first axis (depth), you can update the line as follows:
+    gt_masks = tf.gather(gt_masks, tf.where(non_zeros)[:, 0], axis=3, name="trim_gt_masks")
+    """
+    gt_masks = tf.gather(gt_masks, tf.where(non_zeros)[:, 0], axis=2,       ## NEEDS TO CHANGE axis=3???
                          name="trim_gt_masks")
 
     # Handle COCO crowds
@@ -528,7 +539,7 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     crowd_boxes = tf.gather(gt_boxes, crowd_ix)
     gt_class_ids = tf.gather(gt_class_ids, non_crowd_ix)
     gt_boxes = tf.gather(gt_boxes, non_crowd_ix)
-    gt_masks = tf.gather(gt_masks, non_crowd_ix, axis=2)
+    gt_masks = tf.gather(gt_masks, non_crowd_ix, axis=2)   ## THIS TOO?  axis=3
 
     # Compute overlaps matrix [proposals, gt_boxes]
     overlaps = overlaps_graph(proposals, gt_boxes)
