@@ -334,7 +334,49 @@ class ProposalLayer(KE.Layer):
             proposals = tf.pad(proposals, [(0, padding), (0, 0)])
             return proposals
         
-        proposals = utils.batch_slice([boxes, scores], nms,
+        def nms_3d(bboxes, psocres):
+            bboxes = bboxes.astype('float')
+            y_min = bboxes[:,0]
+            x_min = bboxes[:,1]
+            z_min = bboxes[:,2]
+            y_max = bboxes[:,3]
+            x_max = bboxes[:,4]
+            z_max = bboxes[:,5]
+            
+            sorted_idx = psocres.argsort()[::-1]
+            bbox_areas = (x_max-x_min+1)*(y_max-y_min+1)*(z_max-z_min+1)
+            
+            filtered = []
+            while len(sorted_idx) > 0:
+                rbbox_i = sorted_idx[0]
+                filtered.append(rbbox_i)
+                
+                overlap_xmins = np.maximum(x_min[rbbox_i],x_min[sorted_idx[1:]])
+                overlap_ymins = np.maximum(y_min[rbbox_i],y_min[sorted_idx[1:]])
+                overlap_zmins = np.maximum(z_min[rbbox_i],z_min[sorted_idx[1:]])
+                overlap_xmaxs = np.minimum(x_max[rbbox_i],x_max[sorted_idx[1:]])
+                overlap_ymaxs = np.minimum(y_max[rbbox_i],y_max[sorted_idx[1:]])
+                overlap_zmaxs = np.minimum(z_max[rbbox_i],z_max[sorted_idx[1:]])
+                
+                overlap_widths = np.maximum(0,(overlap_xmaxs-overlap_xmins+1))
+                overlap_heights = np.maximum(0,(overlap_ymaxs-overlap_ymins+1))
+                overlap_depths = np.maximum(0,(overlap_zmaxs-overlap_zmins+1))
+
+                overlap_areas = overlap_widths*overlap_heights*overlap_depths
+                
+                ious = overlap_areas/(bbox_areas[rbbox_i]+bbox_areas[sorted_idx[1:]]-overlap_areas)
+                
+                delete_idx = np.where(ious > self.nms_threshold)[0]+1
+                delete_idx = np.concatenate(([0],delete_idx))
+
+                sorted_idx = np.delete(sorted_idx,delete_idx)
+
+            bboxes = bboxes[filtered].astype('int')
+            padding = tf.maximum(self.proposal_count - tf.shape(bboxes)[0], 0)
+            bboxes = np.pad(bboxes, ((0, padding), (0, 0)), 'constant', constant_values=(0, 0))
+            return tf.convert_to_tensor(bboxes)
+
+        proposals = utils.batch_slice([boxes, scores], nms_3d,
                                       self.config.IMAGES_PER_GPU)
         return proposals
 

@@ -949,7 +949,7 @@ def nms_3d(bboxes, psocres, threshold, proposal_count):
     bboxes = bboxes[filtered].astype('int')
     padding = tf.maximum(proposal_count - tf.shape(bboxes)[0], 0)
     bboxes = np.pad(bboxes, ((0, padding), (0, 0)), 'constant', constant_values=(0, 0))
-    return bboxes
+    return tf.convert_to_tensor(bboxes)
 
 
 """
