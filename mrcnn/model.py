@@ -331,7 +331,7 @@ class ProposalLayer(KE.Layer):
             proposals = tf.gather(boxes, indices)
             # Pad if needed
             padding = tf.maximum(self.proposal_count - tf.shape(proposals)[0], 0)
-            proposals = tf.pad(proposals, [(0, padding), (0, 0, 0)])
+            proposals = tf.pad(proposals, [(0, padding), (0, 0)])
             return proposals
         
         proposals = utils.batch_slice([boxes, scores], nms,
