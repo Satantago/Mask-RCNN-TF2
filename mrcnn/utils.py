@@ -908,18 +908,7 @@ def resize(image, output_shape, order=1, mode='constant', cval=0, clip=True,
             preserve_range=preserve_range)
 
 
-def nms(boxes, scores, proposal_count, nms_threshold, name=None):
-    indices = tf.image.non_max_suppression(
-        boxes, scores, proposal_count,
-        nms_threshold, name="rpn_non_max_suppression")
-    proposals = tf.gather(boxes, indices)
-    # Pad if needed
-    padding = tf.maximum(proposal_count - tf.shape(proposals)[0], 0)
-    proposals = tf.pad(proposals, [(0, padding), (0, 0, 0)])
-    return proposals
 
-
-## NEEDS PADDING
 def nms_3d(bboxes, psocres, threshold, proposal_count):
     bboxes = bboxes.astype('float')
     y_min = bboxes[:,0]
@@ -957,8 +946,10 @@ def nms_3d(bboxes, psocres, threshold, proposal_count):
 
         sorted_idx = np.delete(sorted_idx,delete_idx)
 
-
-    return bboxes[filtered].astype('int')
+    bboxes = bboxes[filtered].astype('int')
+    padding = tf.maximum(proposal_count - tf.shape(bboxes)[0], 0)
+    bboxes = np.pad(bboxes, ((0, padding), (0, 0)), 'constant', constant_values=(0, 0))
+    return bboxes
 
 
 """
