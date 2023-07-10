@@ -355,18 +355,18 @@ class PyramidROIAlign(KE.Layer):
     """Implements ROI Pooling on multiple levels of the feature pyramid.
 
     Params:
-    - pool_shape: [pool_height, pool_width] of the output pooled regions. Usually [7, 7]
+    - pool_shape: [pool_height, pool_width, pool_depth] of the output pooled regions. Usually [7, 7, 7]
 
     Inputs:
-    - boxes: [batch, num_boxes, (y1, x1, y2, x2)] in normalized
+    - boxes: [batch, num_boxes, (y1, x1, z1, y2, x2, z2)] in normalized
              coordinates. Possibly padded with zeros if not enough
              boxes to fill the array.
     - image_meta: [batch, (meta data)] Image details. See compose_image_meta()
     - feature_maps: List of feature maps from different levels of the pyramid.
-                    Each is [batch, height, width, channels]
+                    Each is [batch, height, width, depth, channels]
 
     Output:
-    Pooled regions in the shape: [batch, num_boxes, pool_height, pool_width, channels].
+    Pooled regions in the shape: [batch, num_boxes, pool_height, pool_width, pool_depth, channels].
     The width and height are those specific in the pool_shape in the layer
     constructor.
     """
@@ -376,7 +376,7 @@ class PyramidROIAlign(KE.Layer):
         self.pool_shape = tuple(pool_shape)
 
     def call(self, inputs):
-        # Crop boxes [batch, num_boxes, (y1, x1, y2, x2)] in normalized coords
+        # Crop boxes [batch, num_boxes, (y1, x1, z1, y2, x2, z2)] in normalized coords
         boxes = inputs[0]
 
         # Image meta
@@ -388,24 +388,25 @@ class PyramidROIAlign(KE.Layer):
         feature_maps = inputs[2:]
 
         # Assign each ROI to a level in the pyramid based on the ROI area.
-        y1, x1, y2, x2 = tf.split(boxes, 4, axis=2)
+        y1, x1, z1, y2, x2, z2 = tf.split(boxes, 6, axis=2)
         h = y2 - y1
         w = x2 - x1
+        d = z2 - z1
         # Use shape of first image. Images in a batch must have the same size.
         image_shape = parse_image_meta_graph(image_meta)['image_shape'][0]
         # Equation 1 in the Feature Pyramid Networks paper. Account for
         # the fact that our coordinates are normalized here.
-        # e.g. a 224x224 ROI (in pixels) maps to P4
-        image_area = tf.cast(image_shape[0] * image_shape[1], tf.float32)
-        roi_level = log2_graph(tf.sqrt(h * w) / (224.0 / tf.sqrt(image_area)))
+        # e.g. a 224x224x224 ROI (in pixels) maps to P4
+        image_area = tf.cast(image_shape[0] * image_shape[1] * image_shape[2], tf.float32)
+        roi_level = log2_graph(tf.pow(d * h * w, 1/3) / (224.0 / tf.pow(image_area, 1/3)))
         roi_level = tf.minimum(5, tf.maximum(
             2, 4 + tf.cast(tf.round(roi_level), tf.int32)))
         roi_level = tf.squeeze(roi_level, 2)
 
-        # Loop through levels and apply ROI pooling to each. P2 to P5.
+        # Loop through levels and apply ROI pooling to each. P2 to P9.
         pooled = []
         box_to_level = []
-        for i, level in enumerate(range(2, 6)):
+        for i, level in enumerate(range(2, 10)):
             ix = tf.where(tf.equal(roi_level, level))
             level_boxes = tf.gather_nd(boxes, ix)
 
