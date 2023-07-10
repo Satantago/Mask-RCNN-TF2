@@ -81,7 +81,8 @@ def compute_backbone_shapes(config, image_shape):
     assert config.BACKBONE in ["resnet50", "resnet101"]
     return np.array(
         [[int(math.ceil(image_shape[0] / stride)),
-            int(math.ceil(image_shape[1] / stride))]
+            int(math.ceil(image_shape[1] / stride)),
+            int (math.ceil(image_shape[2] / stride))]
             for stride in config.BACKBONE_STRIDES])
 
 
@@ -108,17 +109,17 @@ def identity_block(input_tensor, kernel_size, filters, stage, block,
     conv_name_base = 'res' + str(stage) + block + '_branch'
     bn_name_base = 'bn' + str(stage) + block + '_branch'
 
-    x = KL.Conv2D(nb_filter1, (1, 1), name=conv_name_base + '2a',
+    x = KL.Conv3D(nb_filter1, (1, 1, 1), name=conv_name_base + '2a',
                   use_bias=use_bias)(input_tensor)
     x = BatchNorm(name=bn_name_base + '2a')(x, training=train_bn)
     x = KL.Activation('relu')(x)
 
-    x = KL.Conv2D(nb_filter2, (kernel_size, kernel_size), padding='same',
+    x = KL.Conv3D(nb_filter2, (kernel_size, kernel_size, kernel_size), padding='same',
                   name=conv_name_base + '2b', use_bias=use_bias)(x)
     x = BatchNorm(name=bn_name_base + '2b')(x, training=train_bn)
     x = KL.Activation('relu')(x)
 
-    x = KL.Conv2D(nb_filter3, (1, 1), name=conv_name_base + '2c',
+    x = KL.Conv3D(nb_filter3, (1, 1, 1), name=conv_name_base + '2c',
                   use_bias=use_bias)(x)
     x = BatchNorm(name=bn_name_base + '2c')(x, training=train_bn)
 
@@ -128,7 +129,7 @@ def identity_block(input_tensor, kernel_size, filters, stage, block,
 
 
 def conv_block(input_tensor, kernel_size, filters, stage, block,
-               strides=(2, 2), use_bias=True, train_bn=True):
+               strides=(2, 2, 2), use_bias=True, train_bn=True):
     """conv_block is the block that has a conv layer at shortcut
     # Arguments
         input_tensor: input tensor
@@ -145,21 +146,21 @@ def conv_block(input_tensor, kernel_size, filters, stage, block,
     conv_name_base = 'res' + str(stage) + block + '_branch'
     bn_name_base = 'bn' + str(stage) + block + '_branch'
 
-    x = KL.Conv2D(nb_filter1, (1, 1), strides=strides,
+    x = KL.Conv3D(nb_filter1, (1, 1, 1), strides=strides,
                   name=conv_name_base + '2a', use_bias=use_bias)(input_tensor)
     x = BatchNorm(name=bn_name_base + '2a')(x, training=train_bn)
     x = KL.Activation('relu')(x)
 
-    x = KL.Conv2D(nb_filter2, (kernel_size, kernel_size), padding='same',
+    x = KL.Conv3D(nb_filter2, (kernel_size, kernel_size, kernel_size), padding='same',
                   name=conv_name_base + '2b', use_bias=use_bias)(x)
     x = BatchNorm(name=bn_name_base + '2b')(x, training=train_bn)
     x = KL.Activation('relu')(x)
 
-    x = KL.Conv2D(nb_filter3, (1, 1), name=conv_name_base +
+    x = KL.Conv3D(nb_filter3, (1, 1, 1), name=conv_name_base +
                   '2c', use_bias=use_bias)(x)
     x = BatchNorm(name=bn_name_base + '2c')(x, training=train_bn)
 
-    shortcut = KL.Conv2D(nb_filter3, (1, 1), strides=strides,
+    shortcut = KL.Conv3D(nb_filter3, (1, 1, 1), strides=strides,
                          name=conv_name_base + '1', use_bias=use_bias)(input_tensor)
     shortcut = BatchNorm(name=bn_name_base + '1')(shortcut, training=train_bn)
 
@@ -176,13 +177,13 @@ def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
     """
     assert architecture in ["resnet50", "resnet101"]
     # Stage 1
-    x = KL.ZeroPadding2D((3, 3))(input_image)
-    x = KL.Conv2D(64, (7, 7), strides=(2, 2), name='conv1', use_bias=True)(x)
+    x = KL.ZeroPadding3D((3, 3, 3))(input_image)
+    x = KL.Conv3D(64, (7, 7, 7), strides=(2, 2, 2), name='conv1', use_bias=True)(x)
     x = BatchNorm(name='bn_conv1')(x, training=train_bn)
     x = KL.Activation('relu')(x)
-    C1 = x = KL.MaxPooling2D((3, 3), strides=(2, 2), padding="same")(x)
+    C1 = x = KL.MaxPooling3D((3, 3, 3), strides=(2, 2, 2), padding="same")(x)
     # Stage 2
-    x = conv_block(x, 3, [64, 64, 256], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
+    x = conv_block(x, 3, [64, 64, 256], stage=2, block='a', strides=(1, 1, 1), train_bn=train_bn)
     x = identity_block(x, 3, [64, 64, 256], stage=2, block='b', train_bn=train_bn)
     C2 = x = identity_block(x, 3, [64, 64, 256], stage=2, block='c', train_bn=train_bn)
     # Stage 3
@@ -212,63 +213,66 @@ def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
 
 def apply_box_deltas_graph(boxes, deltas):
     """Applies the given deltas to the given boxes.
-    boxes: [N, (y1, x1, y2, x2)] boxes to update
-    deltas: [N, (dy, dx, log(dh), log(dw))] refinements to apply
+    boxes: [N, (y1, x1, z1, y2, x2, z2)] boxes to update
+    deltas: [N, (dy, dx, dz, log(dh), log(dw), log(dd))] refinements to apply
     """
-    # Convert to y, x, h, w
-    height = boxes[:, 2] - boxes[:, 0]  #boxes[y2] - boxes[y1]
-    width = boxes[:, 3] - boxes[:, 1]   #boxes[x2] - boxes[x1]
-    #ADD DEPTH?
+    # Convert to y, x, z, h, w, d
+    height = boxes[:, 3] - boxes[:, 0]  #boxes[y2] - boxes[y1]
+    width = boxes[:, 4] - boxes[:, 1]   #boxes[x2] - boxes[x1]
+    depth = boxes[:, 5] - boxes[:, 2]   #boxes[z2] - boxes[z1]
 
     center_y = boxes[:, 0] + 0.5 * height #boxes[y1] + 0.5 * height
     center_x = boxes[:, 1] + 0.5 * width #boxes[x1] + 0.5 * width
+    center_z = boxes[:, 2] + 0.5 * depth #boxes[z1] + 0.5 * depth
     # Apply deltas
     center_y += deltas[:, 0] * height 
     center_x += deltas[:, 1] * width
-    height *= tf.exp(deltas[:, 2])
-    width *= tf.exp(deltas[:, 3])
+    center_z += deltas[:, 2] * depth
+    height *= tf.exp(deltas[:, 3])
+    width *= tf.exp(deltas[:, 4])
+    depth *= tf.exp(deltas[:, 5])
     # Convert back to y1, x1, y2, x2
     y1 = center_y - 0.5 * height
     x1 = center_x - 0.5 * width
+    z1 = center_z - 0.5 * depth
     y2 = y1 + height
     x2 = x1 + width
-    result = tf.stack([y1, x1, y2, x2], axis=1, name="apply_box_deltas_out")
+    z2 = z1 + depth
+    result = tf.stack([y1, x1, z1, y2, x2, z2], axis=1, name="apply_box_deltas_out")
     return result
+
 
 
 def clip_boxes_graph(boxes, window):
     """
-    boxes: [N, (y1, x1, y2, x2)]
-    window: [4] in the form y1, x1, y2, x2
+    boxes: [N, (y1, x1, z1, y2, x2, z2)]
+    window: [6] in the form y1, x1, z1, y2, x2, z2
     """
     # Split
-    wy1, wx1, wy2, wx2 = tf.split(window, 4)
-    y1, x1, y2, x2 = tf.split(boxes, 4, axis=1)
-    #do depth too
-    
+    wy1, wx1, wz1, wy2, wx2, wz2 = tf.split(window, 6)
+    y1, x1, z1, y2, x2, z2 = tf.split(boxes, 6, axis=1)
     # Clip
     y1 = tf.maximum(tf.minimum(y1, wy2), wy1)
     x1 = tf.maximum(tf.minimum(x1, wx2), wx1)
+    z1 = tf.maximum(tf.minimum(z1, wz2), wz1)
     y2 = tf.maximum(tf.minimum(y2, wy2), wy1)
     x2 = tf.maximum(tf.minimum(x2, wx2), wx1)
-    clipped = tf.concat([y1, x1, y2, x2], axis=1, name="clipped_boxes")
-    clipped.set_shape((clipped.shape[0], 4))
+    z2 = tf.maximum(tf.minimum(z2, wz2), wz1)
+    clipped = tf.concat([y1, x1, z1, y2, x2, z2], axis=1, name="clipped_boxes")
+    clipped.set_shape((clipped.shape[0], 6))
     return clipped
-
 
 class ProposalLayer(KE.Layer):
     """Receives anchor scores and selects a subset to pass as proposals
     to the second stage. Filtering is done based on anchor scores and
     non-max suppression to remove overlaps. It also applies bounding
     box refinement deltas to anchors.
-
     Inputs:
         rpn_probs: [batch, num_anchors, (bg prob, fg prob)]
-        rpn_bbox: [batch, num_anchors, (dy, dx, log(dh), log(dw))]
-        anchors: [batch, num_anchors, (y1, x1, y2, x2)] anchors in normalized coordinates
-
+        rpn_bbox: [batch, num_anchors, (dy, dx, dz, log(dh), log(dw), log(dd))]
+        anchors: [batch, num_anchors, (y1, x1, z1, y2, x2, z2)] anchors in normalized coordinates
     Returns:
-        Proposals in normalized coordinates [batch, rois, (y1, x1, y2, x2)]
+        Proposals in normalized coordinates [batch, rois, (y1, x1, z1, y2, x2, z2)]
     """
 
     def __init__(self, proposal_count, nms_threshold, config=None, **kwargs):
@@ -280,15 +284,15 @@ class ProposalLayer(KE.Layer):
     def call(self, inputs):
         # Box Scores. Use the foreground class confidence. [Batch, num_rois, 1]
         scores = inputs[0][:, :, 1]
-        # Box deltas [batch, num_rois, 4]
+        # Box deltas [batch, num_rois, 6]
         deltas = inputs[1]
-        deltas = deltas * np.reshape(self.config.RPN_BBOX_STD_DEV, [1, 1, 4])
+        deltas = deltas * np.reshape(self.config.RPN_BBOX_STD_DEV, [1, 1, 6])
         # Anchors
         anchors = inputs[2]
 
         # Improve performance by trimming to top anchors by score
         # and doing the rest on the smaller subset.
-        pre_nms_limit = tf.minimum(self.config.PRE_NMS_LIMIT, tf.shape(anchors)[1])
+        pre_nms_limit = tf.minimum(self.config.PRE_NMS_LIMIT, tf.shape(anchors)[1]) # == num_anchors
         ix = tf.nn.top_k(scores, pre_nms_limit, sorted=True,
                          name="top_anchors").indices
         # gather scores with corresponding ix
@@ -301,15 +305,15 @@ class ProposalLayer(KE.Layer):
                                     names=["pre_nms_anchors"])
 
         # Apply deltas to anchors to get refined anchors.
-        # [batch, N, (y1, x1, y2, x2)]
+        # [batch, N, (y1, x1, z1, y2, x2, z2)]
         boxes = utils.batch_slice([pre_nms_anchors, deltas],
                                   lambda x, y: apply_box_deltas_graph(x, y),
                                   self.config.IMAGES_PER_GPU,
                                   names=["refined_anchors"])
 
         # Clip to image boundaries. Since we're in normalized coordinates,
-        # clip to 0..1 range. [batch, N, (y1, x1, y2, x2)]
-        window = np.array([0, 0, 1, 1], dtype=np.float32)
+        # clip to 0..1 range. [batch, N, (y1, x1, z1, y2, x2, z2)]
+        window = np.array([0, 0, 0, 1, 1, 1], dtype=np.float32)
         boxes = utils.batch_slice(boxes,
                                   lambda x: clip_boxes_graph(x, window),
                                   self.config.IMAGES_PER_GPU,
@@ -327,14 +331,15 @@ class ProposalLayer(KE.Layer):
             proposals = tf.gather(boxes, indices)
             # Pad if needed
             padding = tf.maximum(self.proposal_count - tf.shape(proposals)[0], 0)
-            proposals = tf.pad(proposals, [(0, padding), (0, 0)])
+            proposals = tf.pad(proposals, [(0, padding), (0, 0, 0)])
             return proposals
+        
         proposals = utils.batch_slice([boxes, scores], nms,
                                       self.config.IMAGES_PER_GPU)
         return proposals
 
     def compute_output_shape(self, input_shape):
-        return (None, self.proposal_count, 4)
+        return (None, self.proposal_count, 6)
 
 
 ############################################################

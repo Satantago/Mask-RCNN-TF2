@@ -906,3 +906,82 @@ def resize(image, output_shape, order=1, mode='constant', cval=0, clip=True,
             image, output_shape,
             order=order, mode=mode, cval=cval, clip=clip,
             preserve_range=preserve_range)
+
+
+def nms(boxes, scores, proposal_count, nms_threshold, name=None):
+    indices = tf.image.non_max_suppression(
+        boxes, scores, proposal_count,
+        nms_threshold, name="rpn_non_max_suppression")
+    proposals = tf.gather(boxes, indices)
+    # Pad if needed
+    padding = tf.maximum(proposal_count - tf.shape(proposals)[0], 0)
+    proposals = tf.pad(proposals, [(0, padding), (0, 0, 0)])
+    return proposals
+
+
+def nms_python(bboxes,psocres,threshold):
+    '''
+    NMS: first sort the bboxes by scores , 
+        keep the bbox with highest score as reference,
+        iterate through all other bboxes, 
+        calculate Intersection Over Union (IOU) between reference bbox and other bbox
+        if iou is greater than threshold,then discard the bbox and continue.
+        
+    Input:
+        bboxes(numpy array of tuples) : Bounding Box Proposals in the format (x_min,y_min,x_max,y_max).
+        pscores(numpy array of floats) : confidance scores for each bbox in bboxes.
+        threshold(float): Overlapping threshold above which proposals will be discarded.
+        
+    Output:
+        filtered_bboxes(numpy array) :selected bboxes for which IOU is less than threshold. 
+    '''
+    #Unstacking Bounding Box Coordinates
+    bboxes = bboxes.astype('float')
+    y_min = bboxes[:,0]
+    x_min = bboxes[:,1]
+    z_min = bboxes[:,2]
+    y_max = bboxes[:,3]
+    x_max = bboxes[:,4]
+    z_max = bboxes[:,5]
+    
+    #Sorting the pscores in descending order and keeping respective indices.
+    sorted_idx = psocres.argsort()[::-1]
+    #Calculating areas of all bboxes.Adding 1 to the side values to avoid zero area bboxes.
+    bbox_areas = (x_max-x_min+1)*(y_max-y_min+1)*(z_max-z_min+1)
+    
+    #list to keep filtered bboxes.
+    filtered = []
+    while len(sorted_idx) > 0:
+        #Keeping highest pscore bbox as reference.
+        rbbox_i = sorted_idx[0]
+        #Appending the reference bbox index to filtered list.
+        filtered.append(rbbox_i)
+        
+        #Calculating (xmin,ymin,xmax,ymax) coordinates of all bboxes w.r.t to reference bbox
+        overlap_xmins = np.maximum(x_min[rbbox_i],x_min[sorted_idx[1:]])
+        overlap_ymins = np.maximum(y_min[rbbox_i],y_min[sorted_idx[1:]])
+        overlap_zmins = np.maximum(z_min[rbbox_i],z_min[sorted_idx[1:]])
+        overlap_xmaxs = np.minimum(x_max[rbbox_i],x_max[sorted_idx[1:]])
+        overlap_ymaxs = np.minimum(y_max[rbbox_i],y_max[sorted_idx[1:]])
+        overlap_zmaxs = np.minimum(z_max[rbbox_i],z_max[sorted_idx[1:]])
+        
+        #Calculating overlap bbox widths,heights and there by areas.
+        overlap_widths = np.maximum(0,(overlap_xmaxs-overlap_xmins+1))
+        overlap_heights = np.maximum(0,(overlap_ymaxs-overlap_ymins+1))
+        overlap_depths = np.maximum(0,(overlap_zmaxs-overlap_zmins+1))
+        
+        overlap_areas = overlap_widths*overlap_heights*overlap_depths
+        
+        #Calculating IOUs for all bboxes except reference bbox
+        ious = overlap_areas/(bbox_areas[rbbox_i]+bbox_areas[sorted_idx[1:]]-overlap_areas)
+        
+        #select indices for which IOU is greather than threshold
+        delete_idx = np.where(ious > threshold)[0]+1
+        delete_idx = np.concatenate(([0],delete_idx))
+        
+        #delete the above indices
+        sorted_idx = np.delete(sorted_idx,delete_idx)
+        
+    
+    #Return filtered bboxes
+    return bboxes[filtered].astype('int')
