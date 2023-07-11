@@ -952,7 +952,6 @@ def nms_3d(bboxes, psocres, threshold, proposal_count):
     return tf.convert_to_tensor(bboxes)
 
 
-from keras import layers as KL
 
 def crop_resize_one_image(image, box, crop_size):
     y1, x1, z1, y2, x2, z2 = box
