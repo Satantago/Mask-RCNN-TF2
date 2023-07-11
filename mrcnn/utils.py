@@ -952,76 +952,62 @@ def nms_3d(bboxes, psocres, threshold, proposal_count):
     return tf.convert_to_tensor(bboxes)
 
 
-"""
-    Non-max Suppression Algorithm
-
-    @param list  Object candidate bounding boxes
-    @param list  Confidence score of bounding boxes
-    @param float IoU threshold
-
-    @return Rest boxes after nms operation
-"""
-# def nms_3d(bounding_boxes, confidence_score, threshold):
-#     # If no bounding boxes, return empty list
-#     if len(bounding_boxes) == 0:
-#         return [], []
-
-#     # Bounding boxes
-#     boxes = np.array(bounding_boxes)
-
-#     # coordinates of bounding boxes
-#     start_y = boxes[:, 0]
-#     start_x = boxes[:, 1]
-#     start_z = boxes[:, 2]
-#     end_y = boxes[:, 3]
-#     end_x = boxes[:, 4]
-#     end_z = boxes[:, 5]
-
-#     # Confidence scores of bounding boxes
-#     score = np.array(confidence_score)
-
-#     # Picked bounding boxes
-#     picked_boxes = []
-#     picked_score = []
-
-#     # Compute areas of bounding boxes
-#     areas = (end_x - start_x + 1) * (end_y - start_y + 1) * (end_z - start_z + 1)
-
-#     # Sort by confidence score of bounding boxes
-#     order = np.argsort(score)
-
-#     # Iterate bounding boxes
-#     while order.size > 0:
-#         # The index of largest confidence score
-#         index = order[-1]
-
-#         # Pick the bounding box with largest confidence score
-#         picked_boxes.append(bounding_boxes[index])
-#         picked_score.append(confidence_score[index])
-
-#         # Compute ordinates of intersection-over-union(IOU)
-#         x1 = np.maximum(start_x[index], start_x[order[:-1]])
-#         x2 = np.minimum(end_x[index], end_x[order[:-1]])
-#         y1 = np.maximum(start_y[index], start_y[order[:-1]])
-#         y2 = np.minimum(end_y[index], end_y[order[:-1]])
-#         z1 = np.maximum(start_z[index], start_z[order[:-1]])
-#         z2 = np.minimum(end_z[index], end_z[order[:-1]])
-
-#         # Compute areas of intersection-over-union
-#         w = np.maximum(0.0, x2 - x1 + 1)
-#         h = np.maximum(0.0, y2 - y1 + 1)
-#         d = np.maximum(0.0, z2 - z1 + 1)
-#         intersection = w * h * d
-
-#         # Compute the ratio between intersection and union
-#         ratio = intersection / (areas[index] + areas[order[:-1]] - intersection)
-
-#         left = np.where(ratio < threshold)
-#         order = order[left]
-
-#     return picked_boxes
-
-
 from keras import layers as KL
+
+def crop_resize_one_image(image, box, crop_size):
+    y1, x1, z1, y2, x2, z2 = box
+    width = image.shape[0]
+    height = image.shape[1]
+    depth = image.shape[2]
+    # denormalize
+    roi_proposal = np.dot(box, np.array([width, height, depth, width, height, depth]))
+    roi_start_w, roi_start_h, roi_start_d, roi_end_w, roi_end_h, roi_end_d = roi_proposal
+
+    # pooling regions size
+    pooled_width = crop_size[0]
+    pooled_height = crop_size[1]
+    pooled_depth = crop_size[2]
+
+    # RoI width, height and depth
+    roi_width = roi_end_w - roi_start_w
+    roi_height = roi_end_h - roi_start_h
+    roi_depth = roi_end_d - roi_start_d
+
+    # raw height and weight of each RoI sub-regions
+    bin_size_h = roi_height / pooled_height
+    bin_size_w = roi_width / pooled_width
+    bin_size_d = roi_depth / pooled_depth
+
+    # we divide each RoI sub-region into roi_bin_grid_h x roi_bin_grid_w x roi_bing_grid_d areas.
+    # These will define the number of sampling points in each sub-region
+    roi_bin_grid_h = np.ceil(roi_height / pooled_height)
+    roi_bin_grid_w = np.ceil(roi_width / pooled_width)
+    roi_bin_grid_d = np.ceil(roi_depth / pooled_depth)
+
+    # variable to be used to calculate pooled value in each sub-region
+    output_val = 0
+
+    # ph, pw and pd define each cube (sub-region) RoI is divided into.
+    ph = 0
+    pw = 0
+    pd = 0
+
+    # iy and ix represent sampled points within each sub-region in RoI. 
+    # In this example roi_bin_grid_h = 3 and roi_bin_grid_w = 2, thus we
+    # have overall 6 points for which we interpolate the values and then average 
+    # them to come up with a value for each of the 4 areas in pooled RoI 
+    # sub-regions 
+    for iy in range(int(roi_bin_grid_h)):
+        # ph * bin_size_h - which square in RoI to pick vertically (on y axis)
+        # (iy + 0.5) * bin_size_h / roi_bin_grid_h - which of the roi_bin_grid_h 
+        # points vertically to select within square 
+        yy = roi_start_h + ph * bin_size_h + (iy + 0.5) * bin_size_h / roi_bin_grid_h
+        for ix in range(int(roi_bin_grid_w)):
+            # pw * bin_size_w -  which square in RoI to pick horizontally (on x axis)
+            # (ix + 0.5) * bin_size_w / roi_bin_grid_w - which of the roi_bin_grid_w 
+            # points vertically to select within square 
+            xx = roi_start_w + pw * bin_size_w + (ix + 0.5) * bin_size_w / roi_bin_grid_w
+
+
 def crop_and_resize(image, boxes, box_indices, crop_size):
    pass
