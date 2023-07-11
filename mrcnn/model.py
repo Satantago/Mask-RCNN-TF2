@@ -400,7 +400,7 @@ class PyramidROIAlign(KE.Layer):
     - pool_shape: [pool_height, pool_width, pool_depth] of the output pooled regions. Usually [7, 7, 7]
 
     Inputs:
-    - boxes: [batch, num_boxes, (y1, x1, z1, y2, x2, z2)] in normalized
+    - boxes: [batch, num_boxes, (y1, x1, z1, y2, x2, z2)] in normalized   -> rank = 3 -> axis=2
              coordinates. Possibly padded with zeros if not enough
              boxes to fill the array.
     - image_meta: [batch, (meta data)] Image details. See compose_image_meta()
@@ -409,7 +409,7 @@ class PyramidROIAlign(KE.Layer):
 
     Output:
     Pooled regions in the shape: [batch, num_boxes, pool_height, pool_width, pool_depth, channels].
-    The width and height are those specific in the pool_shape in the layer
+    The width and height and depth are those specific in the pool_shape in the layer
     constructor.
     """
 
@@ -438,18 +438,18 @@ class PyramidROIAlign(KE.Layer):
         image_shape = parse_image_meta_graph(image_meta)['image_shape'][0]
         # Equation 1 in the Feature Pyramid Networks paper. Account for
         # the fact that our coordinates are normalized here.
-        # e.g. a 224x224x224 ROI (in pixels) maps to P4
-        image_area = tf.cast(image_shape[0] * image_shape[1] * image_shape[2], tf.float32)
-        roi_level = log2_graph(tf.pow(d * h * w, 1/3) / (224.0 / tf.pow(image_area, 1/3)))
+        # e.g. a 224x224x224 ROI (in voxels) maps to P4
+        image_volume = tf.cast(image_shape[0] * image_shape[1] * image_shape[2], tf.float32)
+        roi_level = log2_graph(tf.pow(d * h * w, 1/3) / (224.0 / tf.pow(image_volume, 1/3)))
         roi_level = tf.minimum(5, tf.maximum(
             2, 4 + tf.cast(tf.round(roi_level), tf.int32)))
         roi_level = tf.squeeze(roi_level, 2)
 
-        # Loop through levels and apply ROI pooling to each. P2 to P9.
+        # Loop through levels and apply ROI pooling to each. P2 to P5.
         pooled = []
         box_to_level = []
-        for i, level in enumerate(range(2, 10)):
-            ix = tf.where(tf.equal(roi_level, level))
+        for i, level in enumerate(range(2, 6)):
+            ix = tf.where(tf.equal(roi_level, level))  ## indexes where roi_level == level
             level_boxes = tf.gather_nd(boxes, ix)
 
             # Box indices for crop_and_resize.

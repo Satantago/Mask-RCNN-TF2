@@ -1020,3 +1020,8 @@ def nms_3d(bboxes, psocres, threshold, proposal_count):
 #         order = order[left]
 
 #     return picked_boxes
+
+
+from keras import layers as KL
+def crop_and_resize(image, boxes, box_indices, crop_size):
+   pass
