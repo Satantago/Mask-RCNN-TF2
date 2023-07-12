@@ -953,14 +953,113 @@ def nms_3d(bboxes, psocres, threshold, proposal_count):
 
 
 
+
+def precalc_bilinear(height, width, depth, crop_size, roi_start_h, roi_start_w, roi_start_d,
+                    bin_size_h, bin_size_w, bin_size_d, roi_bin_grid_h, roi_bin_grid_w, roi_bin_grid_d):
+    precalc = dict()
+    pre_calc_index = 0
+    # ph, pw and pd defines each cube that RoI is being divided into. For example,
+    # pooled_height = pooled_width = pooled_depth = 2 we divide RoI into 8 volumes thus each ph, pw and dd
+    # we sample points from each of those areas (e.g. 0,0,0 - sample from cube 0,0,0)
+    pooled_height = crop_size[0]
+    pooled_width = crop_size[1]
+    pooled_depth = crop_size[2]
+    for ph in range(int(pooled_height)):
+        for pw in range(int(pooled_width)):
+            for pd in range(int(pooled_depth)):
+                # iy and ix represent sampled points within each area in RoI. 
+                # For example, roi_bin_grid_h = 3 and roi_bin_grid_w = 2 we will 
+                # have overall 6 points we interpolate the values of and then average them to 
+                # come up with a value for each of the 4 areas in pooled RoI region (which is
+                # 2 x 2 if  pooled_height = pooled_width = 2)
+                for iy in range(int(roi_bin_grid_h)):
+                    # ph * bin_size_h - which square in RoI to pick vertically (on y axis)
+                    # (iy + 0.5) * bin_size_h / roi_bin_grid_h - which of the roi_bin_grid_h points
+                    # vertically to select within square 
+                    yy = roi_start_h + ph * bin_size_h + (iy + 0.5) * bin_size_h / roi_bin_grid_h
+                    for ix in range(int(roi_bin_grid_w)):
+                        # pw * bin_size_w -  which square in RoI to pick horizontally (on x axis)
+                        # (ix + 0.5) * bin_size_w / roi_bin_grid_w - which of the roi_bin_grid_w points
+                        # vertically to select within square 
+                        xx = roi_start_w + pw * bin_size_w + (ix + 0.5) * bin_size_w / roi_bin_grid_w
+                        for iz in range(int(roi_bin_grid_d)):
+                            # pd * bin_size_d -  which square in RoI to pick horizontally (on x axis)
+                            # (ix + 0.5) * bin_size_w / roi_bin_grid_w - which of the roi_bin_grid_w points
+                            # vertically to select within square
+                            zz = roi_start_d + pd * bin_size_d + (iz + 0.5) * bin_size_d / roi_bin_grid_d
+                            
+                            x = xx
+                            y = yy
+                            z = zz
+
+                            x = tf.maximum(0,x)
+                            y = tf.maximum(0,y)
+                            z = tf.maximum(0,z)
+                            x_low = tf.cast(x, 'int32')
+                            y_low = tf.cast(y, 'int32')
+                            z_low = tf.cast(z, 'int32')
+                            
+                            ## X
+                            if (y_low >= height - 1):
+                                y_high = y_low = height - 1
+                                y = y_low
+                            else:
+                                y_high = y_low + 1
+                            ## Y
+                            if (x_low >= width-1):
+                                x_high = x_low = width - 1
+                                x = x_low
+                            else:
+                                x_high = x_low + 1
+
+                            ## Z
+                            if (z_low >= depth-1):
+                                z_high = z_low = depth - 1
+                                z = z_low
+                            else:
+                                z_high = z_low + 1
+                            
+                            ly = y - y_low
+                            lx = x - x_low
+                            lz = z - z_low
+
+                            hy = 1 - ly
+                            hx = 1 - lx
+                            hz = 1 - lz
+
+                            # w1 = hy * hx; w2 = hy * lx; w3 = ly * hx; w4 = ly * lx
+
+                            pos1 = (y_low, x_low, z_low); pos2 = (y_low, x_high, z_low)
+                            pos3 = (y_high, x_low, z_low); pos4 = (y_high, x_high, z_low)
+                            pos5 = (y_low, x_low, z_high); pos6 = (y_low, x_high, z_high)
+                            pos7 = (y_high, x_low, z_high); pos8 = (y_high, x_high, z_high)
+
+                            w1 = hy*hx*hz
+                            w2 = hy*lx*hz
+                            w3 = ly*hx*hz
+                            w4 = ly*lx*hz
+                            w5 = hy*hx*lz
+                            w6 = hy*lx*lz
+                            w7 = ly*hx*lz
+                            w8 = ly*lx*lz
+
+                            precalc[pre_calc_index] = (pos1, pos2, pos3, pos4, pos5, pos6, pos7, pos8,
+                                                        w1, w2, w3, w4, w5, w6, w7, w8)
+            
+                            pre_calc_index += 1
+                        # print(x, y)
+    return precalc
+
+
+
 def crop_resize_one_image(image, box, crop_size):
     y1, x1, z1, y2, x2, z2 = box
     width = image.shape[0]
     height = image.shape[1]
     depth = image.shape[2]
     # denormalize
-    roi_proposal = np.dot(box, np.array([width, height, depth, width, height, depth]))
-    roi_start_w, roi_start_h, roi_start_d, roi_end_w, roi_end_h, roi_end_d = roi_proposal
+    roi_proposal = np.multiply(box, np.array([height, width, depth, height, width, depth]))
+    roi_start_h, roi_start_w, roi_start_d, roi_end_h, roi_end_w, roi_end_d = roi_proposal
 
     # pooling regions size
     pooled_width = crop_size[0]
@@ -983,29 +1082,53 @@ def crop_resize_one_image(image, box, crop_size):
     roi_bin_grid_w = np.ceil(roi_width / pooled_width)
     roi_bin_grid_d = np.ceil(roi_depth / pooled_depth)
 
-    # variable to be used to calculate pooled value in each sub-region
-    output_val = 0
+    precalc = precalc_bilinear(height, width, depth, crop_size, roi_start_h, roi_start_w, roi_start_d,
+                               bin_size_h, bin_size_w, bin_size_d, roi_bin_grid_h, roi_bin_grid_w, roi_bin_grid_d)
 
-    # ph, pw and pd define each cube (sub-region) RoI is divided into.
-    ph = 0
-    pw = 0
-    pd = 0
+    count = max(roi_bin_grid_h * roi_bin_grid_w * roi_bin_grid_d, 1)
+    output = tf.zeros((pooled_height, pooled_width, pooled_depth))
+    pre_calc_index = 0
+    for ph in range(int(pooled_height)):
+        for pw in range(int(pooled_width)):
+            for pd in range(int(pooled_depth)):
+                output_val = 0
+                for iy in range(int(roi_bin_grid_h)):
+                    for ix in range(int(roi_bin_grid_w)):
+                        for iz in range(int(roi_bin_grid_d)):
+                            (pos1, pos2, pos3, pos4, pos5, pos6, pos7, pos8,w1, w2, w3, w4, w5, w6, w7, w8) =  precalc[pre_calc_index] 
+                            (y_low, x_low, z_low)   = pos1 
+                            (y_low, x_high, z_low)  = pos2
+                            (y_high, x_low, z_low)  = pos3
+                            (y_high, x_high, z_low) = pos4
+                            (y_low, x_low, z_high)  = pos5
+                            (y_low, x_high, z_high) = pos6
+                            (y_high, x_low, z_high) = pos7
+                            (y_high, x_high, z_high)= pos8
 
-    # iy and ix represent sampled points within each sub-region in RoI. 
-    # In this example roi_bin_grid_h = 3 and roi_bin_grid_w = 2, thus we
-    # have overall 6 points for which we interpolate the values and then average 
-    # them to come up with a value for each of the 4 areas in pooled RoI 
-    # sub-regions 
-    for iy in range(int(roi_bin_grid_h)):
-        # ph * bin_size_h - which square in RoI to pick vertically (on y axis)
-        # (iy + 0.5) * bin_size_h / roi_bin_grid_h - which of the roi_bin_grid_h 
-        # points vertically to select within square 
-        yy = roi_start_h + ph * bin_size_h + (iy + 0.5) * bin_size_h / roi_bin_grid_h
-        for ix in range(int(roi_bin_grid_w)):
-            # pw * bin_size_w -  which square in RoI to pick horizontally (on x axis)
-            # (ix + 0.5) * bin_size_w / roi_bin_grid_w - which of the roi_bin_grid_w 
-            # points vertically to select within square 
-            xx = roi_start_w + pw * bin_size_w + (ix + 0.5) * bin_size_w / roi_bin_grid_w
+                            output_val += w1 * image[y_low, x_low, z_low] + w2 * image[y_low, x_high, z_low] + \
+                                            w3 * image[y_high, x_low, z_low] +  w4 * image[y_high, x_high, z_low] + \
+                                            w5 * image[y_low, x_low, z_high] + w6 * image[y_low, x_high, z_high] + \
+                                            w7 * image[y_high, x_low, z_high] +  w8 * image[y_high, x_high, z_high]
+
+                            pre_calc_index += 1 
+
+                # we do average pooling here
+                output[ph, pw, pd] = tf.convert_to_tensor(output_val / count)
+    return output 
+
+
+def crop_and_resize_2nd(image, boxes, box_indices, crop_size):
+    ## preprocess arguments
+    xy_stack = tf.unstack(image, axis=3)
+    depth = len(xy_stack)
+    y1, x1, z1, y2, x2, z2 = tf.split(boxes, 6, axis=1)
+    boxes_xy = tf.concat([x1, y1, x2, y2], axis=1)
+    boxes_z = tf.concat([z1, z2], axis=1)
+
+    cropped_xy = []
+    crop_size_xy = (crop_size[0], crop_size[1])
+    for stack in xy_stack:
+        cropped_xy.append(tf.image.crop_and_resize(stack, boxes_xy, box_indices, crop_size))        
 
 
 def crop_and_resize(image, boxes, box_indices, crop_size):
