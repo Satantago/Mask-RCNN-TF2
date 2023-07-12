@@ -25,25 +25,20 @@ CROP_SIZE = (24, 24)
 
 
 import SimpleITK as sitk
+import numpy as np
+import matplotlib.pyplot as plt
+import mrcnn.utils as utils
+
 
 # Load the 3D image
-image_path = 'path_to_your_image.nii.gz'  # Replace with the path to your 3D image file
+image_path = 'sample.nii.gz'  # Replace with the path to your 3D image file
 image = sitk.ReadImage(image_path)
+# print(image.GetSize())
+# image =  image[:,:,59]
+np_array = sitk.GetArrayFromImage(image)
+print(np_array.shape)
 
-# Get the image dimensions
-size = image.GetSize()
-width, height, depth = size
-
-# Accessing voxel values
-voxel_value = image.GetPixel(x, y, z)  # Replace x, y, z with the desired voxel coordinates
-
-# Convert the image to a NumPy array
-image_array = sitk.GetArrayFromImage(image)
-
-# Perform operations on the image array
-# ...
-
-# Save the modified image
-output_path = 'path_to_save_output.nii.gz'  # Replace with the desired output path
-output_image = sitk.GetImageFromArray(image_array)
-sitk.WriteImage(output_image, output_path)
+cropped_and_resized = utils.crop_resize_one_image(np_array, [0.4, 0.4, 0.4, 0.7, 0.7, 0.7], [2,2,2])
+cropped_and_resized = cropped_and_resized[:,:,0]
+plt.imshow(cropped_and_resized)
+plt.show()
