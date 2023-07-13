@@ -509,27 +509,30 @@ class PyramidROIAlign(KE.Layer):
 
 def overlaps_graph(boxes1, boxes2):
     """Computes IoU overlaps between two sets of boxes.
-    boxes1, boxes2: [N, (y1, x1, y2, x2)].
+    boxes1, boxes2: [N, (y1, x1, z1, y2, x2, z2)].
     """
     # 1. Tile boxes2 and repeat boxes1. This allows us to compare
     # every boxes1 against every boxes2 without loops.
     # TF doesn't have an equivalent to np.repeat() so simulate it
     # using tf.tile() and tf.reshape.
     b1 = tf.reshape(tf.tile(tf.expand_dims(boxes1, 1),  
-                            [1, 1, tf.shape(boxes2)[0]]), [-1, 4])
+                            [1, 1, tf.shape(boxes2)[0]]), [-1, 6])
     b2 = tf.tile(boxes2, [tf.shape(boxes1)[0], 1])
     # 2. Compute intersections
-    b1_y1, b1_x1, b1_y2, b1_x2 = tf.split(b1, 4, axis=1)  # NEEDS TO CHANGE?
-    b2_y1, b2_x1, b2_y2, b2_x2 = tf.split(b2, 4, axis=1)
+    b1_y1, b1_x1, b1_z1, b1_y2, b1_x2, b1_z2 = tf.split(b1, 6, axis=1)  # NEEDS TO CHANGE?
+    b2_y1, b2_x1, b2_z1, b2_y2, b2_x2, b2_z2 = tf.split(b2, 6, axis=1)
     y1 = tf.maximum(b1_y1, b2_y1)
     x1 = tf.maximum(b1_x1, b2_x1)
+    z1 = tf.maximum(b1_z1, b2_z1)
     y2 = tf.minimum(b1_y2, b2_y2)
     x2 = tf.minimum(b1_x2, b2_x2)
-    intersection = tf.maximum(x2 - x1, 0) * tf.maximum(y2 - y1, 0)
+    z2 = tf.minimum(b1_z2, b2_z2)
+    intersection = tf.maximum(x2 - x1, 0) * tf.maximum(y2 - y1, 0) * tf.maximum(z2 - z1, 0)
     # 3. Compute unions
-    b1_area = (b1_y2 - b1_y1) * (b1_x2 - b1_x1)
-    b2_area = (b2_y2 - b2_y1) * (b2_x2 - b2_x1)
-    union = b1_area + b2_area - intersection
+    b1_volume = (b1_y2 - b1_y1) * (b1_x2 - b1_x1) * (b1_z2 - b1_z1)
+    b2_volume = (b2_y2 - b2_y1) * (b2_x2 - b2_x1) * (b2_z2 - b2_z1)
+
+    union = b1_volume + b2_volume - intersection
     # 4. Compute IoU and reshape to [boxes1, boxes2]
     iou = intersection / union
     overlaps = tf.reshape(iou, [tf.shape(boxes1)[0], tf.shape(boxes2)[0]])
@@ -541,18 +544,18 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     generates target class IDs, bounding box deltas, and masks for each.
 
     Inputs:
-    proposals: [POST_NMS_ROIS_TRAINING, (y1, x1, y2, x2)] in normalized coordinates. Might
+    proposals: [POST_NMS_ROIS_TRAINING, (y1, x1, z1, y2, x2, z2)] in normalized coordinates. Might
                be zero padded if there are not enough proposals.
     gt_class_ids: [MAX_GT_INSTANCES] int class IDs
-    gt_boxes: [MAX_GT_INSTANCES, (y1, x1, y2, x2)] in normalized coordinates.
-    gt_masks: [height, width, MAX_GT_INSTANCES] of boolean type.
+    gt_boxes: [MAX_GT_INSTANCES, (y1, x1, z1, y2, x2, z2)] in normalized coordinates.
+    gt_masks: [height, width, depth, MAX_GT_INSTANCES] of boolean type.
 
     Returns: Target ROIs and corresponding class IDs, bounding box shifts,
     and masks.
-    rois: [TRAIN_ROIS_PER_IMAGE, (y1, x1, y2, x2)] in normalized coordinates
+    rois: [TRAIN_ROIS_PER_IMAGE, (y1, x1, z1, y2, x2, z2)] in normalized coordinates
     class_ids: [TRAIN_ROIS_PER_IMAGE]. Integer class IDs. Zero padded.
-    deltas: [TRAIN_ROIS_PER_IMAGE, (dy, dx, log(dh), log(dw))]
-    masks: [TRAIN_ROIS_PER_IMAGE, height, width]. Masks cropped to bbox
+    deltas: [TRAIN_ROIS_PER_IMAGE, (dy, dx, dz, log(dh), log(dw), log(dd))]
+    masks: [TRAIN_ROIS_PER_IMAGE, height, width, depth]. Masks cropped to bbox
            boundaries and resized to neural network output size.
 
     Note: Returned arrays might be zero padded if not enough target ROIs.
@@ -576,7 +579,7 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     and you want to select the masks along the first axis (depth), you can update the line as follows:
     gt_masks = tf.gather(gt_masks, tf.where(non_zeros)[:, 0], axis=3, name="trim_gt_masks")
     """
-    gt_masks = tf.gather(gt_masks, tf.where(non_zeros)[:, 0], axis=2,       ## NEEDS TO CHANGE axis=3???
+    gt_masks = tf.gather(gt_masks, tf.where(non_zeros)[:, 0], axis=3,       ## NEEDS TO CHANGE axis=3???
                          name="trim_gt_masks")
 
     # Handle COCO crowds
@@ -587,7 +590,7 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     crowd_boxes = tf.gather(gt_boxes, crowd_ix)
     gt_class_ids = tf.gather(gt_class_ids, non_crowd_ix)
     gt_boxes = tf.gather(gt_boxes, non_crowd_ix)
-    gt_masks = tf.gather(gt_masks, non_crowd_ix, axis=2)   ## THIS TOO?  axis=3
+    gt_masks = tf.gather(gt_masks, non_crowd_ix, axis=3)   ## THIS TOO?  axis=3
 
     # Compute overlaps matrix [proposals, gt_boxes]
     overlaps = overlaps_graph(proposals, gt_boxes)
@@ -634,8 +637,8 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     deltas /= config.BBOX_STD_DEV
 
     # Assign positive ROIs to GT masks
-    # Permute masks to [N, height, width, 1]
-    transposed_masks = tf.expand_dims(tf.transpose(gt_masks, [2, 0, 1]), -1)
+    # Permute masks to [N, height, width, depth, 1]
+    transposed_masks = tf.expand_dims(tf.transpose(gt_masks, [3, 0, 1, 2]), -1)
     # Pick the right mask for each ROI
     roi_masks = tf.gather(transposed_masks, roi_gt_box_assignment)
 
@@ -644,21 +647,24 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     if config.USE_MINI_MASK:
         # Transform ROI coordinates from normalized image space
         # to normalized mini-mask space.
-        y1, x1, y2, x2 = tf.split(positive_rois, 4, axis=1)
-        gt_y1, gt_x1, gt_y2, gt_x2 = tf.split(roi_gt_boxes, 4, axis=1)
+        y1, x1, z1, y2, x2, z2 = tf.split(positive_rois, 6, axis=1)
+        gt_y1, gt_x1, gt_z1, gt_y2, gt_x2, gt_z2 = tf.split(roi_gt_boxes, 6, axis=1)
         gt_h = gt_y2 - gt_y1
         gt_w = gt_x2 - gt_x1
+        gt_d = gt_z2 - gt_z1
         y1 = (y1 - gt_y1) / gt_h
         x1 = (x1 - gt_x1) / gt_w
+        z1 = (z1 - gt_z1) / gt_d
         y2 = (y2 - gt_y1) / gt_h
         x2 = (x2 - gt_x1) / gt_w
-        boxes = tf.concat([y1, x1, y2, x2], 1)
+        z2 = (z2 - gt_z1) / gt_d
+        boxes = tf.concat([y1, x1, z1, y2, x2, z2], 1)
     box_ids = tf.range(0, tf.shape(roi_masks)[0])
     masks = tf.image.crop_and_resize(tf.cast(roi_masks, tf.float32), boxes,
                                      box_ids,
                                      config.MASK_SHAPE)
     # Remove the extra dimension from masks.
-    masks = tf.squeeze(masks, axis=3)
+    masks = tf.squeeze(masks, axis=4)  ## axis=3 -> axis=4 ??
 
     # Threshold mask pixels at 0.5 to have GT masks be 0 or 1 to use with
     # binary cross entropy loss.
