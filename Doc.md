@@ -45,6 +45,9 @@ serves as a wrapper around the detection_targets_graph function, allowing it to 
 
 ## Detection Layer
 
+- **refine_detections_graph(rois, probs, deltas, window, config)**: refines classified proposals, filters overlaps, and returns the final detections. 
+
+- **class DetectionLayer(KL.Layer)**: serves as a wrapper around the refine_detections_graph function, allowing it to be used as a layer in the model. It performs the necessary computations to generate the final detections for each proposal in the batch, including bounding box refinements, filtering out overlaps, and applying NMS.
 
 
 

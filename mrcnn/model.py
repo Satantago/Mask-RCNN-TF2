@@ -689,19 +689,19 @@ class DetectionTargetLayer(KE.Layer):
     and masks for each.
 
     Inputs:
-    proposals: [batch, N, (y1, x1, y2, x2)] in normalized coordinates. Might
+    proposals: [batch, N, (y1, x1, z1, y2, x2, z2)] in normalized coordinates. Might
                be zero padded if there are not enough proposals.
     gt_class_ids: [batch, MAX_GT_INSTANCES] Integer class IDs.
-    gt_boxes: [batch, MAX_GT_INSTANCES, (y1, x1, y2, x2)] in normalized
+    gt_boxes: [batch, MAX_GT_INSTANCES, (y1, x1, z1, y2, x2, z2)] in normalized
               coordinates.
-    gt_masks: [batch, height, width, MAX_GT_INSTANCES] of boolean type
+    gt_masks: [batch, height, width, depth, MAX_GT_INSTANCES] of boolean type
 
     Returns: Target ROIs and corresponding class IDs, bounding box shifts,
     and masks.
-    rois: [batch, TRAIN_ROIS_PER_IMAGE, (y1, x1, y2, x2)] in normalized
+    rois: [batch, TRAIN_ROIS_PER_IMAGE, (y1, x1, z2, y2, x2, z2)] in normalized
           coordinates
     target_class_ids: [batch, TRAIN_ROIS_PER_IMAGE]. Integer class IDs.
-    target_deltas: [batch, TRAIN_ROIS_PER_IMAGE, (dy, dx, log(dh), log(dw)]
+    target_deltas: [batch, TRAIN_ROIS_PER_IMAGE, (dy, dx, dz, log(dh), log(dw), log(dd)]
     target_mask: [batch, TRAIN_ROIS_PER_IMAGE, height, width]
                  Masks cropped to bbox boundaries and resized to neural
                  network output size.
@@ -731,15 +731,15 @@ class DetectionTargetLayer(KE.Layer):
 
     def compute_output_shape(self, input_shape):
         return [
-            (None, self.config.TRAIN_ROIS_PER_IMAGE, 4),  # rois
+            (None, self.config.TRAIN_ROIS_PER_IMAGE, 6),  # rois
             (None, self.config.TRAIN_ROIS_PER_IMAGE),  # class_ids
-            (None, self.config.TRAIN_ROIS_PER_IMAGE, 4),  # deltas
+            (None, self.config.TRAIN_ROIS_PER_IMAGE, 6),  # deltas
             (None, self.config.TRAIN_ROIS_PER_IMAGE, self.config.MASK_SHAPE[0],
-             self.config.MASK_SHAPE[1])  # masks
+             self.config.MASK_SHAPE[1], self.config.MASK_SHAPE[2])  # masks
         ]
 
     def compute_mask(self, inputs, mask=None):
-        return [None, None, None, None]
+        return [None, None, None, None, None, None]
 
 
 ############################################################
@@ -751,25 +751,35 @@ def refine_detections_graph(rois, probs, deltas, window, config):
     detections.
 
     Inputs:
-        rois: [N, (y1, x1, y2, x2)] in normalized coordinates
+        rois: [N, (y1, x1, z1, y2, x2, z2)] in normalized coordinates
         probs: [N, num_classes]. Class probabilities.
-        deltas: [N, num_classes, (dy, dx, log(dh), log(dw))]. Class-specific
+        deltas: [N, num_classes, (dy, dx, dz, log(dh), log(dw), log(dd))]. Class-specific
                 bounding box deltas.
-        window: (y1, x1, y2, x2) in normalized coordinates. The part of the image
+        window: (y1, x1, z1 y2, x2, z2) in normalized coordinates. The part of the image
             that contains the image excluding the padding.
 
-    Returns detections shaped: [num_detections, (y1, x1, y2, x2, class_id, score)] where
+    Returns detections shaped: [num_detections, (y1, x1, z1, y2, x2, z2, class_id, score)] where
         coordinates are normalized.
-    """
+
     # Class IDs per ROI
+    """
+    """
+    determining the class IDs per ROI by finding the index of the class with 
+    the highest probability for each ROI
+    """
     class_ids = tf.argmax(probs, axis=1, output_type=tf.int32)
+
+
     # Class probability of the top class of each ROI
+    """
+    extracts the class scores for the top class of each ROI using tf.gather_nd
+    """
     indices = tf.stack([tf.range(probs.shape[0]), class_ids], axis=1)
     class_scores = tf.gather_nd(probs, indices)
     # Class-specific bounding box deltas
     deltas_specific = tf.gather_nd(deltas, indices)
     # Apply bounding box deltas
-    # Shape: [boxes, (y1, x1, y2, x2)] in normalized coordinates
+    # Shape: [boxes, (y1, x1, z1 y2, x2, z2)] in normalized coordinates
     refined_rois = apply_box_deltas_graph(
         rois, deltas_specific * config.BBOX_STD_DEV)
     # Clip boxes to image window
@@ -798,11 +808,16 @@ def refine_detections_graph(rois, probs, deltas, window, config):
         # Indices of ROIs of the given class
         ixs = tf.where(tf.equal(pre_nms_class_ids, class_id))[:, 0]
         # Apply NMS
-        class_keep = tf.image.non_max_suppression(
-                tf.gather(pre_nms_rois, ixs),
-                tf.gather(pre_nms_scores, ixs),
-                max_output_size=config.DETECTION_MAX_INSTANCES,
-                iou_threshold=config.DETECTION_NMS_THRESHOLD)
+        # class_keep = tf.image.non_max_suppression(
+        #         tf.gather(pre_nms_rois, ixs),
+        #         tf.gather(pre_nms_scores, ixs),
+        #         max_output_size=config.DETECTION_MAX_INSTANCES,
+        #         iou_threshold=config.DETECTION_NMS_THRESHOLD)
+
+        class_keep = utils.nms_3d(tf.gather(pre_nms_rois, ixs),
+                                    tf.gather(pre_nms_scores, ixs),
+                                    config.DETECTION_NMS_THRESHOLD,
+                                    config.DETECTION_MAX_INSTANCES)
         # Map indices
         class_keep = tf.gather(keep, tf.gather(ixs, class_keep))
         # Pad with -1 so returned tensors have the same shape
@@ -830,7 +845,7 @@ def refine_detections_graph(rois, probs, deltas, window, config):
     top_ids = tf.nn.top_k(class_scores_keep, k=num_keep, sorted=True)[1]
     keep = tf.gather(keep, top_ids)
 
-    # Arrange output as [N, (y1, x1, y2, x2, class_id, score)]
+    # Arrange output as [N, (y1, x1, z1, y2, x2, z2, class_id, score)]
     # Coordinates are normalized.
     detections = tf.concat([
         tf.gather(refined_rois, keep),
@@ -849,7 +864,7 @@ class DetectionLayer(KE.Layer):
     returns the final detection boxes.
 
     Returns:
-    [batch, num_detections, (y1, x1, y2, x2, class_id, class_score)] where
+    [batch, num_detections, (y1, x1, z1, y2, x2, z2, class_id, class_score)] where
     coordinates are normalized.
     """
 
@@ -869,7 +884,8 @@ class DetectionLayer(KE.Layer):
         # because we know that all images get resized to the same size.
         m = parse_image_meta_graph(image_meta)
         image_shape = m['image_shape'][0]
-        window = norm_boxes_graph(m['window'], image_shape[:2])
+        # image_shape[:2] -> image_shape[:3]
+        window = norm_boxes_graph(m['window'], image_shape[:3])
 
         # Run detection refinement graph on each item in the batch
         detections_batch = utils.batch_slice(
