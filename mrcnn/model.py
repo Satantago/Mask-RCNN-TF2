@@ -1280,11 +1280,11 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
         object and resizing it to MINI_MASK_SHAPE.
 
     Returns:
-    image: [height, width, 3]
+    image: [height, width, depth, 3]
     shape: the original shape of the image before resizing and cropping.
     class_ids: [instance_count] Integer class IDs
-    bbox: [instance_count, (y1, x1, y2, x2)]
-    mask: [height, width, instance_count]. The height and width are those
+    bbox: [instance_count, (y1, x1, z1, y2, x2, z2)]
+    mask: [height, width, depth, instance_count]. The height and width are those
         of the image unless use_mini_mask is True, in which case they are
         defined in MINI_MASK_SHAPE.
     """
@@ -1341,12 +1341,12 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
 
     # Note that some boxes might be all zeros if the corresponding mask got cropped out.
     # and here is to filter them out
-    _idx = np.sum(mask, axis=(0, 1)) > 0
-    mask = mask[:, :, _idx]
+    _idx = np.sum(mask, axis=(0, 1, 2)) > 0
+    mask = mask[:, :, :, _idx]
     class_ids = class_ids[_idx]
     # Bounding boxes. Note that some boxes might be all zeros
     # if the corresponding mask got cropped out.
-    # bbox: [num_instances, (y1, x1, y2, x2)]
+    # bbox: [num_instances, (y1, x1, z1, y2, x2, z2)]
     bbox = utils.extract_bboxes(mask)
 
     # Active classes
@@ -1373,16 +1373,16 @@ def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
     the Mask RCNN heads without using the RPN head.
 
     Inputs:
-    rpn_rois: [N, (y1, x1, y2, x2)] proposal boxes.
+    rpn_rois: [N, (y1, x1, z1, y2, x2, z2)] proposal boxes.
     gt_class_ids: [instance count] Integer class IDs
-    gt_boxes: [instance count, (y1, x1, y2, x2)]
+    gt_boxes: [instance count, (y1, x1, z1, y2, x2, z2)]
     gt_masks: [height, width, instance count] Ground truth masks. Can be full
               size or mini-masks.
 
     Returns:
-    rois: [TRAIN_ROIS_PER_IMAGE, (y1, x1, y2, x2)]
+    rois: [TRAIN_ROIS_PER_IMAGE, (y1, x1, z1, y2, x2, z2)]
     class_ids: [TRAIN_ROIS_PER_IMAGE]. Integer class IDs.
-    bboxes: [TRAIN_ROIS_PER_IMAGE, NUM_CLASSES, (y, x, log(h), log(w))]. Class-specific
+    bboxes: [TRAIN_ROIS_PER_IMAGE, NUM_CLASSES, (y, x, z, log(h), log(w), log(d))]. Class-specific
             bbox refinements.
     masks: [TRAIN_ROIS_PER_IMAGE, height, width, NUM_CLASSES). Class specific masks cropped
            to bbox boundaries and resized to neural network output size.
@@ -1406,10 +1406,10 @@ def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
     gt_masks = gt_masks[:, :, instance_ids]
 
     # Compute areas of ROIs and ground truth boxes.
-    rpn_roi_area = (rpn_rois[:, 2] - rpn_rois[:, 0]) * \
-        (rpn_rois[:, 3] - rpn_rois[:, 1])
-    gt_box_area = (gt_boxes[:, 2] - gt_boxes[:, 0]) * \
-        (gt_boxes[:, 3] - gt_boxes[:, 1])
+    rpn_roi_area = (rpn_rois[:, 3] - rpn_rois[:, 0]) * (rpn_rois[:, 4] - rpn_rois[:, 1]) * \
+        (rpn_rois[:, 5] - rpn_rois[:, 2])
+    gt_box_area = (gt_boxes[:, 3] - gt_boxes[:, 0]) * (gt_boxes[:, 4] - gt_boxes[:, 1]) * \
+        (gt_boxes[:, 5] - gt_boxes[:, 2])
 
     # Compute overlaps [rpn_rois, gt_boxes]
     overlaps = np.zeros((rpn_rois.shape[0], gt_boxes.shape[0]))
@@ -1483,12 +1483,12 @@ def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
     roi_gt_class_ids = rpn_roi_gt_class_ids[keep]
     roi_gt_assignment = rpn_roi_iou_argmax[keep]
 
-    # Class-aware bbox deltas. [y, x, log(h), log(w)]
+    # Class-aware bbox deltas. [y, x, z, log(h), log(w), log(d)]
     bboxes = np.zeros((config.TRAIN_ROIS_PER_IMAGE,
-                       config.NUM_CLASSES, 4), dtype=np.float32)
+                       config.NUM_CLASSES, 6), dtype=np.float32)
     pos_ids = np.where(roi_gt_class_ids > 0)[0]
     bboxes[pos_ids, roi_gt_class_ids[pos_ids]] = utils.box_refinement(
-        rois[pos_ids], roi_gt_boxes[pos_ids, :4])
+        rois[pos_ids], roi_gt_boxes[pos_ids, :6])
     # Normalize bbox refinements
     bboxes /= config.BBOX_STD_DEV
 
@@ -1499,26 +1499,27 @@ def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
         class_id = roi_gt_class_ids[i]
         assert class_id > 0, "class id must be greater than 0"
         gt_id = roi_gt_assignment[i]
-        class_mask = gt_masks[:, :, gt_id]
+        class_mask = gt_masks[:, :, :, gt_id]
 
         if config.USE_MINI_MASK:
             # Create a mask placeholder, the size of the image
-            placeholder = np.zeros(config.IMAGE_SHAPE[:2], dtype=bool)
+            placeholder = np.zeros(config.IMAGE_SHAPE[:3], dtype=bool)
             # GT box
-            gt_y1, gt_x1, gt_y2, gt_x2 = gt_boxes[gt_id]
+            gt_y1, gt_x1, gt_z1, gt_y2, gt_x2, gt_z2 = gt_boxes[gt_id]
             gt_w = gt_x2 - gt_x1
             gt_h = gt_y2 - gt_y1
+            gt_d = gt_z2 - gt_z1
             # Resize mini mask to size of GT box
-            placeholder[gt_y1:gt_y2, gt_x1:gt_x2] = \
-                np.round(utils.resize(class_mask, (gt_h, gt_w))).astype(bool)
+            placeholder[gt_y1:gt_y2, gt_x1:gt_x2, gt_z1:gt_z2] = \
+                np.round(utils.resize(class_mask, (gt_h, gt_w, gt_d))).astype(bool)
             # Place the mini batch in the placeholder
             class_mask = placeholder
 
         # Pick part of the mask and resize it
-        y1, x1, y2, x2 = rois[i].astype(np.int32)
-        m = class_mask[y1:y2, x1:x2]
+        y1, x1, z1, y2, x2, z2 = rois[i].astype(np.int32)
+        m = class_mask[y1:y2, x1:x2, z1:z2]
         mask = utils.resize(m, config.MASK_SHAPE)
-        masks[i, :, :, class_id] = mask
+        masks[i, :, :, :, class_id] = mask
 
     return rois, roi_gt_class_ids, bboxes, masks
 
