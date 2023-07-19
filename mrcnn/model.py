@@ -1528,19 +1528,19 @@ def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
     """Given the anchors and GT boxes, compute overlaps and identify positive
     anchors and deltas to refine them to match their corresponding GT boxes.
 
-    anchors: [num_anchors, (y1, x1, y2, x2)]
+    anchors: [num_anchors, (y1, x1, z1, y2, x2, z2)]
     gt_class_ids: [num_gt_boxes] Integer class IDs.
-    gt_boxes: [num_gt_boxes, (y1, x1, y2, x2)]
+    gt_boxes: [num_gt_boxes, (y1, x1, z1, y2, x2, z2)]
 
     Returns:
     rpn_match: [N] (int32) matches between anchors and GT boxes.
                1 = positive anchor, -1 = negative anchor, 0 = neutral
-    rpn_bbox: [N, (dy, dx, log(dh), log(dw))] Anchor bbox deltas.
+    rpn_bbox: [N, (dy, dx, dz, log(dh), log(dw), log(dd))] Anchor bbox deltas.
     """
     # RPN Match: 1 = positive anchor, -1 = negative anchor, 0 = neutral
     rpn_match = np.zeros([anchors.shape[0]], dtype=np.int32)
-    # RPN bounding boxes: [max anchors per image, (dy, dx, log(dh), log(dw))]
-    rpn_bbox = np.zeros((config.RPN_TRAIN_ANCHORS_PER_IMAGE, 4))
+    # RPN bounding boxes: [max anchors per image, (dy, dx, dz, log(dh), log(dw), log(dd))]
+    rpn_bbox = np.zeros((config.RPN_TRAIN_ANCHORS_PER_IMAGE, 6))
 
     # Handle COCO crowds
     # A crowd box in COCO is a bounding box around several instances. Exclude
@@ -1611,22 +1611,28 @@ def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
 
         # Convert coordinates to center plus width/height.
         # GT Box
-        gt_h = gt[2] - gt[0]
-        gt_w = gt[3] - gt[1]
+        gt_h = gt[3] - gt[0]
+        gt_w = gt[4] - gt[1]
+        gt_d = gt[5] - gt[2]
         gt_center_y = gt[0] + 0.5 * gt_h
         gt_center_x = gt[1] + 0.5 * gt_w
+        gt_center_z = gt[2] + 0.5 * gt_d
         # Anchor
-        a_h = a[2] - a[0]
-        a_w = a[3] - a[1]
+        a_h = a[3] - a[0]
+        a_w = a[4] - a[1]
+        a_d = a[5] - a[2]
         a_center_y = a[0] + 0.5 * a_h
         a_center_x = a[1] + 0.5 * a_w
+        a_center_z = a[2] + 0.5 * a_d
 
         # Compute the bbox refinement that the RPN should predict.
         rpn_bbox[ix] = [
             (gt_center_y - a_center_y) / a_h,
             (gt_center_x - a_center_x) / a_w,
+            (gt_center_z - a_center_z) / a_d,
             np.log(gt_h / a_h),
             np.log(gt_w / a_w),
+            np.log(gt_d / a_d)
         ]
         # Normalize
         rpn_bbox[ix] /= config.RPN_BBOX_STD_DEV
@@ -1639,27 +1645,30 @@ def generate_random_rois(image_shape, count, gt_class_ids, gt_boxes):
     """Generates ROI proposals similar to what a region proposal network
     would generate.
 
-    image_shape: [Height, Width, Depth]
+    image_shape: [Height, Width, Depth, nb_channels]
     count: Number of ROIs to generate
     gt_class_ids: [N] Integer ground truth class IDs
-    gt_boxes: [N, (y1, x1, y2, x2)] Ground truth boxes in pixels.
+    gt_boxes: [N, (y1, x1, z1, y2, x2, z2)] Ground truth boxes in pixels.
 
-    Returns: [count, (y1, x1, y2, x2)] ROI boxes in pixels.
+    Returns: [count, (y1, x1, z1, y2, x2, z2)] ROI boxes in pixels.
     """
     # placeholder
-    rois = np.zeros((count, 4), dtype=np.int32)
+    rois = np.zeros((count, 6), dtype=np.int32)
 
     # Generate random ROIs around GT boxes (90% of count)
     rois_per_box = int(0.9 * count / gt_boxes.shape[0])
     for i in range(gt_boxes.shape[0]):
-        gt_y1, gt_x1, gt_y2, gt_x2 = gt_boxes[i]
+        gt_y1, gt_x1, gt_z1, gt_y2, gt_x2, gt_z2 = gt_boxes[i]
         h = gt_y2 - gt_y1
         w = gt_x2 - gt_x1
+        d = gt_z2 - gt_z1
         # random boundaries
         r_y1 = max(gt_y1 - h, 0)
         r_y2 = min(gt_y2 + h, image_shape[0])
         r_x1 = max(gt_x1 - w, 0)
         r_x2 = min(gt_x2 + w, image_shape[1])
+        r_z1 = max(gt_z1 - d, 0)
+        r_z2 = min(gt_z2 + d, image_shape[2])
 
         # To avoid generating boxes with zero area, we generate double what
         # we need and filter out the extra. If we get fewer valid boxes
@@ -1667,20 +1676,24 @@ def generate_random_rois(image_shape, count, gt_class_ids, gt_boxes):
         while True:
             y1y2 = np.random.randint(r_y1, r_y2, (rois_per_box * 2, 2))
             x1x2 = np.random.randint(r_x1, r_x2, (rois_per_box * 2, 2))
+            z1z2 = np.random.randint(r_z1, r_z2, (rois_per_box * 2, 2))
             # Filter out zero area boxes
             threshold = 1
             y1y2 = y1y2[np.abs(y1y2[:, 0] - y1y2[:, 1]) >=
                         threshold][:rois_per_box]
             x1x2 = x1x2[np.abs(x1x2[:, 0] - x1x2[:, 1]) >=
                         threshold][:rois_per_box]
-            if y1y2.shape[0] == rois_per_box and x1x2.shape[0] == rois_per_box:
+            z1z2 = z1z2[np.abs(z1z2[:, 0] - z1z2[:, 1]) >=
+                        threshold][:rois_per_box]
+            if y1y2.shape[0] == rois_per_box and x1x2.shape[0] == rois_per_box and z1z2.shape[0] == remaining_count:
                 break
 
-        # Sort on axis 1 to ensure x1 <= x2 and y1 <= y2 and then reshape
+        # Sort on axis 1 to ensure x1 <= x2 and y1 <= y2 and z1 <= z2 then reshape
         # into x1, y1, x2, y2 order
         x1, x2 = np.split(np.sort(x1x2, axis=1), 2, axis=1)
         y1, y2 = np.split(np.sort(y1y2, axis=1), 2, axis=1)
-        box_rois = np.hstack([y1, x1, y2, x2])
+        z1, z2 = np.split(np.sort(z1z2, axis=1), 2, axis=1)
+        box_rois = np.hstack([y1, x1, z1, y2, x2, z2])
         rois[rois_per_box * i:rois_per_box * (i + 1)] = box_rois
 
     # Generate random ROIs anywhere in the image (10% of count)
@@ -1691,20 +1704,24 @@ def generate_random_rois(image_shape, count, gt_class_ids, gt_boxes):
     while True:
         y1y2 = np.random.randint(0, image_shape[0], (remaining_count * 2, 2))
         x1x2 = np.random.randint(0, image_shape[1], (remaining_count * 2, 2))
+        z1z2 = np.random.randint(0, image_shape[2], (remaining_count * 2, 2))
         # Filter out zero area boxes
         threshold = 1
         y1y2 = y1y2[np.abs(y1y2[:, 0] - y1y2[:, 1]) >=
                     threshold][:remaining_count]
         x1x2 = x1x2[np.abs(x1x2[:, 0] - x1x2[:, 1]) >=
                     threshold][:remaining_count]
-        if y1y2.shape[0] == remaining_count and x1x2.shape[0] == remaining_count:
+        z1z2 = z1z2[np.abs(z1z2[:, 0] - z1z2[:, 1]) >=
+                    threshold][:remaining_count]
+        if y1y2.shape[0] == remaining_count and x1x2.shape[0] == remaining_count and z1z2.shape[0] == remaining_count:
             break
 
-    # Sort on axis 1 to ensure x1 <= x2 and y1 <= y2 and then reshape
+    # Sort on axis 1 to ensure x1 <= x2 and y1 <= y2 and z1 <= z2 and then reshape
     # into x1, y1, x2, y2 order
     x1, x2 = np.split(np.sort(x1x2, axis=1), 2, axis=1)
     y1, y2 = np.split(np.sort(y1y2, axis=1), 2, axis=1)
-    global_rois = np.hstack([y1, x1, y2, x2])
+    z1, z2 = np.split(np.sort(z1z2, axis=1), 2, axis=1)
+    global_rois = np.hstack([y1, x1, z1, y2, x2, z2])
     rois[-remaining_count:] = global_rois
     return rois
 
@@ -1738,13 +1755,13 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
     generator returns two lists, inputs and outputs. The contents
     of the lists differs depending on the received arguments:
     inputs list:
-    - images: [batch, H, W, C]
+    - images: [batch, H, W, D, C]
     - image_meta: [batch, (meta data)] Image details. See compose_image_meta()
     - rpn_match: [batch, N] Integer (1=positive anchor, -1=negative, 0=neutral)
-    - rpn_bbox: [batch, N, (dy, dx, log(dh), log(dw))] Anchor bbox deltas.
+    - rpn_bbox: [batch, N, (dy, dx, dz, log(dh), log(dw), log(dd))] Anchor bbox deltas.
     - gt_class_ids: [batch, MAX_GT_INSTANCES] Integer class IDs
-    - gt_boxes: [batch, MAX_GT_INSTANCES, (y1, x1, y2, x2)]
-    - gt_masks: [batch, height, width, MAX_GT_INSTANCES]. The height and width
+    - gt_boxes: [batch, MAX_GT_INSTANCES, (y1, x1, z1, y2, x2, z2)]
+    - gt_masks: [batch, height, width, depth MAX_GT_INSTANCES]. The height and width and depth
                 are those of the image unless use_mini_mask is True, in which
                 case they are defined in MINI_MASK_SHAPE.
 
@@ -1759,7 +1776,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
     no_augmentation_sources = no_augmentation_sources or []
 
     # Anchors
-    # [anchor_count, (y1, x1, y2, x2)]
+    # [anchor_count, (y1, x1, z1, y2, x2, z2)]
     backbone_shapes = compute_backbone_shapes(config, config.IMAGE_SHAPE)
     anchors = utils.generate_pyramid_anchors(config.RPN_ANCHOR_SCALES,
                                              config.RPN_ANCHOR_RATIOS,
@@ -1816,19 +1833,19 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                 batch_rpn_match = np.zeros(
                     [batch_size, anchors.shape[0], 1], dtype=rpn_match.dtype)
                 batch_rpn_bbox = np.zeros(
-                    [batch_size, config.RPN_TRAIN_ANCHORS_PER_IMAGE, 4], dtype=rpn_bbox.dtype)
+                    [batch_size, config.RPN_TRAIN_ANCHORS_PER_IMAGE, 6], dtype=rpn_bbox.dtype)
                 batch_images = np.zeros(
                     (batch_size,) + image.shape, dtype=np.float32)
                 batch_gt_class_ids = np.zeros(
                     (batch_size, config.MAX_GT_INSTANCES), dtype=np.int32)
                 batch_gt_boxes = np.zeros(
-                    (batch_size, config.MAX_GT_INSTANCES, 4), dtype=np.int32)
+                    (batch_size, config.MAX_GT_INSTANCES, 6), dtype=np.int32)
                 batch_gt_masks = np.zeros(
-                    (batch_size, gt_masks.shape[0], gt_masks.shape[1],
+                    (batch_size, gt_masks.shape[0], gt_masks.shape[1], gt_masks.shape[2],
                      config.MAX_GT_INSTANCES), dtype=gt_masks.dtype)
                 if random_rois:
                     batch_rpn_rois = np.zeros(
-                        (batch_size, rpn_rois.shape[0], 4), dtype=rpn_rois.dtype)
+                        (batch_size, rpn_rois.shape[0], 6), dtype=rpn_rois.dtype)
                     if detection_targets:
                         batch_rois = np.zeros(
                             (batch_size,) + rois.shape, dtype=rois.dtype)
@@ -1845,7 +1862,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                     np.arange(gt_boxes.shape[0]), config.MAX_GT_INSTANCES, replace=False)
                 gt_class_ids = gt_class_ids[ids]
                 gt_boxes = gt_boxes[ids]
-                gt_masks = gt_masks[:, :, ids]
+                gt_masks = gt_masks[:, :, :, ids]
 
             # Add to batch
             batch_image_meta[b] = image_meta
@@ -1854,7 +1871,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             batch_images[b] = mold_image(image.astype(np.float32), config)
             batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
             batch_gt_boxes[b, :gt_boxes.shape[0]] = gt_boxes
-            batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
+            batch_gt_masks[b, :, :, :, :gt_masks.shape[-1]] = gt_masks
             if random_rois:
                 batch_rpn_rois[b] = rpn_rois
                 if detection_targets:

@@ -62,9 +62,15 @@ to double check:
 
 
 
-
-
-
+## docker tf3d
+- sudo systemctl daemon-reload
+- sudo systemctl restart docker
+- sudo pkill -SIGHUP dockerd
+- --gpus all instead of --runtime=nvidia
+- systemctl list-unit-files | grep enable | grep docker
+- systemctl disable snap.docker.dockerd.service
+- cat /etc/docker/daemon.json
+- nvidia-container-cli list
 
 
 
