@@ -54,6 +54,11 @@ serves as a wrapper around the detection_targets_graph function, allowing it to 
 ## Mask Layer
 - this uses pretrained weights from resnet50 2d, i need to find 3d weights. I think they exist in pytorch, but not in keras. I need to find a way to convert them.
 
+## Utils
+- utils.load_image, need to check some stuff on dimensions
+- **does skimage read 3D images?** if not i have to recheck my stuff
+- line 880: download_trained_weights(coco_model_path, verbose=1)
+- change: COCO_MODEL_URL = "https://github.com/matterport/Mask_RCNN/releases/download/v2.0/mask_rcnn_coco.h5"
 
 
 ## LOADING
