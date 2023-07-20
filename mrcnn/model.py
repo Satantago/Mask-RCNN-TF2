@@ -1944,15 +1944,15 @@ class MaskRCNN():
         assert mode in ['training', 'inference']
 
         # Image size must be dividable by 2 multiple times
-        h, w = config.IMAGE_SHAPE[:2]
-        if h / 2**6 != int(h / 2**6) or w / 2**6 != int(w / 2**6):
+        h, w, d = config.IMAGE_SHAPE[:3]
+        if h / 2**6 != int(h / 2**6) or w / 2**6 != int(w / 2**6) or d / 2**6 != int(d / 2**6):
             raise Exception("Image size must be dividable by 2 at least 6 times "
                             "to avoid fractions when downscaling and upscaling."
                             "For example, use 256, 320, 384, 448, 512, ... etc. ")
 
         # Inputs
         input_image = KL.Input(
-            shape=[None, None, config.IMAGE_SHAPE[2]], name="input_image")
+            shape=[None, None, None, config.IMAGE_SHAPE[3]], name="input_image")
         input_image_meta = KL.Input(shape=[config.IMAGE_META_SIZE],
                                     name="input_image_meta")
         if mode == "training":
@@ -1960,25 +1960,26 @@ class MaskRCNN():
             input_rpn_match = KL.Input(
                 shape=[None, 1], name="input_rpn_match", dtype=tf.int32)
             input_rpn_bbox = KL.Input(
-                shape=[None, 4], name="input_rpn_bbox", dtype=tf.float32)
+                shape=[None, 6], name="input_rpn_bbox", dtype=tf.float32)
 
             # Detection GT (class IDs, bounding boxes, and masks)
             # 1. GT Class IDs (zero padded)
             input_gt_class_ids = KL.Input(
                 shape=[None], name="input_gt_class_ids", dtype=tf.int32)
             # 2. GT Boxes in pixels (zero padded)
-            # [batch, MAX_GT_INSTANCES, (y1, x1, y2, x2)] in image coordinates
+            # [batch, MAX_GT_INSTANCES, (y1, x1, z1, y2, x2, z2)] in image coordinates
             input_gt_boxes = KL.Input(
-                shape=[None, 4], name="input_gt_boxes", dtype=tf.float32)
+                shape=[None, 6], name="input_gt_boxes", dtype=tf.float32)
             # Normalize coordinates
             gt_boxes = KL.Lambda(lambda x: norm_boxes_graph(
-                x, K.shape(input_image)[1:3]))(input_gt_boxes)
+                x, K.shape(input_image)[1:4]))(input_gt_boxes)
             # 3. GT Masks (zero padded)
-            # [batch, height, width, MAX_GT_INSTANCES]
+            # [batch, height, width, depth, MAX_GT_INSTANCES]
             if config.USE_MINI_MASK:
                 input_gt_masks = KL.Input(
                     shape=[config.MINI_MASK_SHAPE[0],
-                           config.MINI_MASK_SHAPE[1], None],
+                           config.MINI_MASK_SHAPE[1],
+                           config.MINI_MASK_SHAPE[2], None],
                     name="input_gt_masks", dtype=bool)
             else:
                 input_gt_masks = KL.Input(
@@ -1986,7 +1987,7 @@ class MaskRCNN():
                     name="input_gt_masks", dtype=bool)
         elif mode == "inference":
             # Anchors in normalized coordinates
-            input_anchors = KL.Input(shape=[None, 4], name="input_anchors")
+            input_anchors = KL.Input(shape=[None, 6], name="input_anchors")
 
         # Build the shared convolutional layers.
         # Bottom-up Layers
@@ -2000,24 +2001,24 @@ class MaskRCNN():
                                              stage5=True, train_bn=config.TRAIN_BN)
         # Top-down Layers
         # TODO: add assert to varify feature map sizes match what's in config
-        P5 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c5p5')(C5)
+        P5 = KL.Conv3D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1, 1), name='fpn_c5p5')(C5)
         P4 = KL.Add(name="fpn_p4add")([
-            KL.UpSampling2D(size=(2, 2), name="fpn_p5upsampled")(P5),
-            KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c4p4')(C4)])
+            KL.UpSampling3D(size=(2, 2, 2), name="fpn_p5upsampled")(P5),
+            KL.Conv3D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1, 1), name='fpn_c4p4')(C4)])
         P3 = KL.Add(name="fpn_p3add")([
-            KL.UpSampling2D(size=(2, 2), name="fpn_p4upsampled")(P4),
-            KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c3p3')(C3)])
+            KL.UpSampling3D(size=(2, 2, 2), name="fpn_p4upsampled")(P4),
+            KL.Conv3D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1, 1), name='fpn_c3p3')(C3)])
         P2 = KL.Add(name="fpn_p2add")([
-            KL.UpSampling2D(size=(2, 2), name="fpn_p3upsampled")(P3),
-            KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1), name='fpn_c2p2')(C2)])
+            KL.UpSampling3D(size=(2, 2, 2), name="fpn_p3upsampled")(P3),
+            KL.Conv3D(config.TOP_DOWN_PYRAMID_SIZE, (1, 1, 1), name='fpn_c2p2')(C2)])
         # Attach 3x3 conv to all P layers to get the final feature maps.
-        P2 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p2")(P2)
-        P3 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p3")(P3)
-        P4 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p4")(P4)
-        P5 = KL.Conv2D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3), padding="SAME", name="fpn_p5")(P5)
+        P2 = KL.Conv3D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3, 3), padding="SAME", name="fpn_p2")(P2)
+        P3 = KL.Conv3D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3, 3), padding="SAME", name="fpn_p3")(P3)
+        P4 = KL.Conv3D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3, 3), padding="SAME", name="fpn_p4")(P4)
+        P5 = KL.Conv3D(config.TOP_DOWN_PYRAMID_SIZE, (3, 3, 3), padding="SAME", name="fpn_p5")(P5)
         # P6 is used for the 5th anchor scale in RPN. Generated by
         # subsampling from P5 with stride of 2.
-        P6 = KL.MaxPooling2D(pool_size=(1, 1), strides=2, name="fpn_p6")(P5)
+        P6 = KL.MaxPooling3D(pool_size=(1, 1, 1), strides=2, name="fpn_p6")(P5)
 
         # Note that P6 is used in RPN, but not in the classifier heads.
         rpn_feature_maps = [P2, P3, P4, P5, P6]
@@ -2053,7 +2054,7 @@ class MaskRCNN():
         rpn_class_logits, rpn_class, rpn_bbox = outputs
 
         # Generate proposals
-        # Proposals are [batch, N, (y1, x1, y2, x2)] in normalized coordinates
+        # Proposals are [batch, N, (y1, x1, z1, y2, x2, z2)] in normalized coordinates
         # and zero padded.
         proposal_count = config.POST_NMS_ROIS_TRAINING if mode == "training"\
             else config.POST_NMS_ROIS_INFERENCE
@@ -2072,11 +2073,11 @@ class MaskRCNN():
 
             if not config.USE_RPN_ROIS:
                 # Ignore predicted ROIs and use ROIs provided as an input.
-                input_rois = KL.Input(shape=[config.POST_NMS_ROIS_TRAINING, 4],
+                input_rois = KL.Input(shape=[config.POST_NMS_ROIS_TRAINING, 6],
                                       name="input_roi", dtype=np.int32)
                 # Normalize coordinates
                 target_rois = KL.Lambda(lambda x: norm_boxes_graph(
-                    x, K.shape(input_image)[1:3]))(input_rois)
+                    x, K.shape(input_image)[1:4]))(input_rois)
             else:
                 target_rois = rpn_rois
 
@@ -2137,13 +2138,13 @@ class MaskRCNN():
                                      fc_layers_size=config.FPN_CLASSIF_FC_LAYERS_SIZE)
 
             # Detections
-            # output is [batch, num_detections, (y1, x1, y2, x2, class_id, score)] in
+            # output is [batch, num_detections, (y1, x1, z1, y2, x2, z2, class_id, score)] in
             # normalized coordinates
             detections = DetectionLayer(config, name="mrcnn_detection")(
                 [rpn_rois, mrcnn_class, mrcnn_bbox, input_image_meta])
 
             # Create masks for detections
-            detection_boxes = KL.Lambda(lambda x: x[..., :4])(detections)
+            detection_boxes = KL.Lambda(lambda x: x[..., :6])(detections)
             mrcnn_mask = build_fpn_mask_graph(detection_boxes, mrcnn_feature_maps,
                                               input_image_meta,
                                               config.MASK_POOL_SIZE,
@@ -2327,7 +2328,7 @@ class MaskRCNN():
             if layer.__class__.__name__ == 'Model':
                 print("In model: ", layer.name)
                 self.set_trainable(
-                    layer_regex, keras_model=layer, indent=indent + 4)
+                    layer_regex, keras_model=layer, indent=indent + 4)  ## + 6???
                 continue
 
             if not layer.weights:
@@ -2488,13 +2489,13 @@ class MaskRCNN():
     def mold_inputs(self, images):
         """Takes a list of images and modifies them to the format expected
         as an input to the neural network.
-        images: List of image matrices [height,width,depth]. Images can have
+        images: List of image matrices [height,width,depth, nb_channels]. Images can have
             different sizes.
 
         Returns 3 Numpy matrices:
-        molded_images: [N, h, w, 3]. Images resized and normalized.
+        molded_images: [N, h, w, d, 3]. Images resized and normalized.
         image_metas: [N, length of meta data]. Details about each image.
-        windows: [N, (y1, x1, y2, x2)]. The portion of the image that has the
+        windows: [N, (y1, x1, z1, y2, x2, z2)]. The portion of the image that has the
             original image (padding excluded).
         """
         molded_images = []
@@ -2530,47 +2531,48 @@ class MaskRCNN():
         network output to a format suitable for use in the rest of the
         application.
 
-        detections: [N, (y1, x1, y2, x2, class_id, score)] in normalized coordinates
-        mrcnn_mask: [N, height, width, num_classes]
-        original_image_shape: [H, W, C] Original image shape before resizing
+        detections: [N, (y1, x1, z1, y2, x2, z2, class_id, score)] in normalized coordinates
+        mrcnn_mask: [N, height, width, depth, num_classes]
+        original_image_shape: [H, W, D, C] Original image shape before resizing
         image_shape: [H, W, C] Shape of the image after resizing and padding
-        window: [y1, x1, y2, x2] Pixel coordinates of box in the image where the real
+        window: [y1, x1, z1, y2, x2, z2] Pixel coordinates of box in the image where the real
                 image is excluding the padding.
 
         Returns:
-        boxes: [N, (y1, x1, y2, x2)] Bounding boxes in pixels
+        boxes: [N, (y1, x1, z1, y2, x2, z2)] Bounding boxes in pixels
         class_ids: [N] Integer class IDs for each bounding box
         scores: [N] Float probability scores of the class_id
         masks: [height, width, num_instances] Instance masks
         """
         # How many detections do we have?
         # Detections array is padded with zeros. Find the first class_id == 0.
-        zero_ix = np.where(detections[:, 4] == 0)[0]
+        zero_ix = np.where(detections[:, 6] == 0)[0]
         N = zero_ix[0] if zero_ix.shape[0] > 0 else detections.shape[0]
 
         # Extract boxes, class_ids, scores, and class-specific masks
-        boxes = detections[:N, :4]
-        class_ids = detections[:N, 4].astype(np.int32)
-        scores = detections[:N, 5]
+        boxes = detections[:N, :6]
+        class_ids = detections[:N, 6].astype(np.int32)
+        scores = detections[:N, 7]
         masks = mrcnn_mask[np.arange(N), :, :, class_ids]
 
         # Translate normalized coordinates in the resized image to pixel
         # coordinates in the original image before resizing
-        window = utils.norm_boxes(window, image_shape[:2])
-        wy1, wx1, wy2, wx2 = window
-        shift = np.array([wy1, wx1, wy1, wx1])
+        window = utils.norm_boxes(window, image_shape[:3])
+        wy1, wx1, wz1, wy2, wx2, wz2 = window
+        shift = np.array([wy1, wx1, wz1, wy1, wx1, wz2])
         wh = wy2 - wy1  # window height
         ww = wx2 - wx1  # window width
-        scale = np.array([wh, ww, wh, ww])
+        wz= wz2 - wz1   # window depth
+        scale = np.array([wh, ww, wz, wh, ww, wz])
         # Convert boxes to normalized coordinates on the window
         boxes = np.divide(boxes - shift, scale)
         # Convert boxes to pixel coordinates on the original image
-        boxes = utils.denorm_boxes(boxes, original_image_shape[:2])
+        boxes = utils.denorm_boxes(boxes, original_image_shape[:3])
 
-        # Filter out detections with zero area. Happens in early training when
+        # Filter out detections with zero volume. Happens in early training when
         # network weights are still random
         exclude_ix = np.where(
-            (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]) <= 0)[0]
+            (boxes[:, 3] - boxes[:, 0]) * (boxes[:, 4] - boxes[:, 1]) * (boxes[:, 5] - boxes[:, 2]) <= 0)[0]
         if exclude_ix.shape[0] > 0:
             boxes = np.delete(boxes, exclude_ix, axis=0)
             class_ids = np.delete(class_ids, exclude_ix, axis=0)
@@ -2585,7 +2587,7 @@ class MaskRCNN():
             full_mask = utils.unmold_mask(masks[i], boxes[i], original_image_shape)
             full_masks.append(full_mask)
         full_masks = np.stack(full_masks, axis=-1)\
-            if full_masks else np.empty(original_image_shape[:2] + (0,))
+            if full_masks else np.empty(original_image_shape[:3] + (0,))
 
         return boxes, class_ids, scores, full_masks
 
@@ -2595,10 +2597,10 @@ class MaskRCNN():
         images: List of images, potentially of different sizes.
 
         Returns a list of dicts, one dict per image. The dict contains:
-        rois: [N, (y1, x1, y2, x2)] detection bounding boxes
+        rois: [N, (y1, x1, z1, y2, x2, z2)] detection bounding boxes
         class_ids: [N] int class IDs
         scores: [N] float probability scores for the class IDs
-        masks: [H, W, N] instance binary masks
+        masks: [H, W, D, N] instance binary masks
         """
         assert self.mode == "inference", "Create model in inference mode."
         assert len(
@@ -2662,10 +2664,10 @@ class MaskRCNN():
         image_metas: image meta data, also returned by load_image_gt()
 
         Returns a list of dicts, one dict per image. The dict contains:
-        rois: [N, (y1, x1, y2, x2)] detection bounding boxes
+        rois: [N, (y1, x1, z1, y2, x2, z2)] detection bounding boxes
         class_ids: [N] int class IDs
         scores: [N] float probability scores for the class IDs
-        masks: [H, W, N] instance binary masks
+        masks: [H, W, D, N] instance binary masks
         """
         assert self.mode == "inference", "Create model in inference mode."
         assert len(molded_images) == self.config.BATCH_SIZE,\
@@ -2698,7 +2700,7 @@ class MaskRCNN():
         # Process detections
         results = []
         for i, image in enumerate(molded_images):
-            window = [0, 0, image.shape[0], image.shape[1]]
+            window = [0, 0, image.shape[0], image.shape[1], image.shape[2]]
             final_rois, final_class_ids, final_scores, final_masks =\
                 self.unmold_detections(detections[i], mrcnn_mask[i],
                                        image.shape, molded_images[i].shape,
@@ -2730,7 +2732,7 @@ class MaskRCNN():
             # TODO: Remove this after the notebook are refactored to not use it
             self.anchors = a
             # Normalize coordinates
-            self._anchor_cache[tuple(image_shape)] = utils.norm_boxes(a, image_shape[:2])
+            self._anchor_cache[tuple(image_shape)] = utils.norm_boxes(a, image_shape[:3])
         return self._anchor_cache[tuple(image_shape)]
 
     def ancestor(self, tensor, name, checked=None):
@@ -2843,9 +2845,9 @@ def compose_image_meta(image_id, original_image_shape, image_shape,
     """Takes attributes of an image and puts them in one 1D array.
 
     image_id: An int ID of the image. Useful for debugging.
-    original_image_shape: [H, W, C] before resizing or padding.
-    image_shape: [H, W, C] after resizing and padding
-    window: (y1, x1, y2, x2) in pixels. The area of the image where the real
+    original_image_shape: [H, W, D, C] before resizing or padding.
+    image_shape: [H, W, D, C] after resizing and padding
+    window: (y1, x1, z1, y2, x2, z2) in pixels. The area of the image where the real
             image is (excluding the padding)
     scale: The scaling factor applied to the original image (float32)
     active_class_ids: List of class_ids available in the dataset from which
@@ -2854,9 +2856,9 @@ def compose_image_meta(image_id, original_image_shape, image_shape,
     """
     meta = np.array(
         [image_id] +                  # size=1
-        list(original_image_shape) +  # size=3
-        list(image_shape) +           # size=3
-        list(window) +                # size=4 (y1, x1, y2, x2) in image cooredinates
+        list(original_image_shape) +  # size=4 (H, W, D, C)
+        list(image_shape) +           # size=4 (H, W, D, C)
+        list(window) +                # size=6 (y1, x1, z1, y2, x2, z2) in image coordinates
         [scale] +                     # size=1
         list(active_class_ids)        # size=num_classes
     )
@@ -2872,11 +2874,11 @@ def parse_image_meta(meta):
     Returns a dict of the parsed values.
     """
     image_id = meta[:, 0]
-    original_image_shape = meta[:, 1:4]
-    image_shape = meta[:, 4:7]
-    window = meta[:, 7:11]  # (y1, x1, y2, x2) window of image in in pixels
-    scale = meta[:, 11]
-    active_class_ids = meta[:, 12:]
+    original_image_shape = meta[:, 1:5]
+    image_shape = meta[:, 5:9]
+    window = meta[:, 9:15]  # (y1, x1, z1, y2, x2, z2) window of image in in pixels
+    scale = meta[:, 15]
+    active_class_ids = meta[:, 16:]
     return {
         "image_id": image_id.astype(np.int32),
         "original_image_shape": original_image_shape.astype(np.int32),
@@ -2896,11 +2898,11 @@ def parse_image_meta_graph(meta):
     Returns a dict of the parsed tensors.
     """
     image_id = meta[:, 0]
-    original_image_shape = meta[:, 1:4]
-    image_shape = meta[:, 4:7]
-    window = meta[:, 7:11]  # (y1, x1, y2, x2) window of image in in pixels
-    scale = meta[:, 11]
-    active_class_ids = meta[:, 12:]
+    original_image_shape = meta[:, 1:5]
+    image_shape = meta[:, 5:9]
+    window = meta[:, 9:15]  # (y1, x1, y2, x2) window of image in in pixels
+    scale = meta[:, 15]
+    active_class_ids = meta[:, 16:]
     return {
         "image_id": image_id,
         "original_image_shape": original_image_shape,
@@ -2929,10 +2931,10 @@ def unmold_image(normalized_images, config):
 ############################################################
 
 def trim_zeros_graph(boxes, name='trim_zeros'):
-    """Often boxes are represented with matrices of shape [N, 4] and
+    """Often boxes are represented with matrices of shape [N, 6] and
     are padded with zeros. This removes zero boxes.
 
-    boxes: [N, 4] matrix of boxes.
+    boxes: [N, 6] matrix of boxes.
     non_zeros: [N] a 1D boolean mask identifying the rows to keep
     """
     non_zeros = tf.cast(tf.reduce_sum(tf.abs(boxes), axis=1), tf.bool)
@@ -2952,33 +2954,33 @@ def batch_pack_graph(x, counts, num_rows):
 
 def norm_boxes_graph(boxes, shape):
     """Converts boxes from pixel coordinates to normalized coordinates.
-    boxes: [..., (y1, x1, y2, x2)] in pixel coordinates
-    shape: [..., (height, width)] in pixels
+    boxes: [..., (y1, x1, z1, y2, x2, z2)] in pixel coordinates
+    shape: [..., (height, width, depth)] in pixels
 
-    Note: In pixel coordinates (y2, x2) is outside the box. But in normalized
+    Note: In pixel coordinates (y2, x2, z2) is outside the box. But in normalized
     coordinates it's inside the box.
 
     Returns:
-        [..., (y1, x1, y2, x2)] in normalized coordinates
+        [..., (y1, x1, z1, y2, x2, z2)] in normalized coordinates
     """
-    h, w = tf.split(tf.cast(shape, tf.float32), 2)
-    scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)
-    shift = tf.constant([0., 0., 1., 1.])
+    h, w, d = tf.split(tf.cast(shape, tf.float32), 3)
+    scale = tf.concat([h, w, d, h, w, d], axis=-1) - tf.constant(1.0)
+    shift = tf.constant([0., 0., 0., 1., 1., 1.])
     return tf.divide(boxes - shift, scale)
 
 
 def denorm_boxes_graph(boxes, shape):
     """Converts boxes from normalized coordinates to pixel coordinates.
-    boxes: [..., (y1, x1, y2, x2)] in normalized coordinates
-    shape: [..., (height, width)] in pixels
+    boxes: [..., (y1, x1, z1, y2, x2, z2)] in normalized coordinates
+    shape: [..., (height, width, depth)] in pixels
 
-    Note: In pixel coordinates (y2, x2) is outside the box. But in normalized
+    Note: In pixel coordinates (y2, x2, z2) is outside the box. But in normalized
     coordinates it's inside the box.
 
     Returns:
-        [..., (y1, x1, y2, x2)] in pixel coordinates
+        [..., (y1, x1, z1, y2, x2, z2)] in pixel coordinates
     """
-    h, w = tf.split(tf.cast(shape, tf.float32), 2)
-    scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)
-    shift = tf.constant([0., 0., 1., 1.])
+    h, w, d = tf.split(tf.cast(shape, tf.float32), 3)
+    scale = tf.concat([h, w, d, h, w, d], axis=-1) - tf.constant(1.0)
+    shift = tf.constant([0., 0., 0., 1., 1., 1.])
     return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32)

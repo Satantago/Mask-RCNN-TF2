@@ -51,6 +51,8 @@ serves as a wrapper around the detection_targets_graph function, allowing it to 
 
 
 
+## Mask Layer
+- this uses pretrained weights from resnet50 2d, i need to find 3d weights. I think they exist in pytorch, but not in keras. I need to find a way to convert them.
 
 
 
